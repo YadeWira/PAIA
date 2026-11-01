@@ -12,8 +12,8 @@
       its fields' values (paiawebp),
   all through one arithmetic coder.
 
-  STREAM (version 2; proof of concept: not frozen)
-    version   1 B    2
+  STREAM (version 3; proof of concept: not frozen)
+    version   1 B    3
     tables    2 B    log2 of the byte model's and the pixel model's tables
                      (12 to 22: from the sizes, so a small file clears little)
     coded     the rest:
@@ -71,7 +71,7 @@ interface
 uses SysUtils, paiaarith, paiamodel, paiagif, paiafli, paiadib, paiaiff, paiawebp;
 
 const
-  STREAM_VERSION = 2;
+  STREAM_VERSION = 3;
 
 type
   TCodecStats = record
