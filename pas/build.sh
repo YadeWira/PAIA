@@ -5,6 +5,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE"
 mkdir -p build/checked build/fast build/pure
+rm -f build/paia build/paia-checked build/paia-pure
 # the C model (the release build only); no libc, so the same .o can go into
 # a library later
 ${CC:-gcc} -O3 -fno-builtin -fno-stack-protector -fPIC -c paiapix.c -o build/fast/paiapix.o

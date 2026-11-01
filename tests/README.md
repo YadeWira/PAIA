@@ -13,3 +13,8 @@ ours, nor ffmpeg nor ImageMagick, writes FLICs): every pixel chunk PAIA
 takes (BYTE_RUN, DELTA_FLI, DELTA_FLC with an odd width's last-byte word,
 COPY, BLACK), palettes, an unknown chunk, and a truncated file. ffmpeg
 decodes all of them.
+
+`ani/`: animated cursors written by `tools/mkani.py` (none of the tools at
+hand writes ANI): frames of 32, 24, 4 and 1 bits a pixel, a CUR with
+hotspots, rate and sequence chunks, a frame kept as PNG, and a truncated
+file. Each frame, taken out, is a valid ICO or CUR for ImageMagick.

@@ -15,7 +15,7 @@ fpc -O2 -Fu"$HERE/pas" -FU"$B/checked" "$HERE/pas/tests/test_blake3.pas" -o"$B/t
 
 echo "== samples"
 fail=0; n=0
-for f in "$HERE"/tests/gif/* "$HERE"/tests/fli/*; do
+for f in "$HERE"/tests/gif/* "$HERE"/tests/fli/* "$HERE"/tests/ani/*; do
   b=$(basename "$f"); n=$((n+1))
   mkdir -p "$T/c" "$T/f" "$T/x" "$T/bad"
   "$B/paia-checked" a -q -f -o "$T/c" "$f"

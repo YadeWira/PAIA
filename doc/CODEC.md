@@ -154,6 +154,27 @@ Each came back the same (and the 22 files named `.fli`/`.flc` there that
 are not FLICs: 88.35%, xz 87.23%). The model is Pascal only for now: a
 2.8 MB FLIC (306 frames of 160x100) takes 8 s to compress and verify.
 
+## ANI (`pas/paiadib.pas`)
+
+A Windows animated cursor is a RIFF "ACON" whose frames are ICO or CUR
+files, and their images are device-independent bitmaps, not compressed
+(PNG ones stay as bytes). As for FLICs, each bitmap's rows (the colour
+bitmap, then the 1-bit AND mask) are coded byte by byte in their own
+order, each byte knowing its channel and its place, so they come back
+exactly by construction. The contexts: the same channel's left, up and
+diagonal neighbours, a gradient (left + up - up-left), the channel coded
+before in the same pixel and how it changed from the left one (B -> G ->
+R), the same byte of the previous frame of the same shape, and a match
+model.
+
+| 26 ANIs of the sample corpus (12.9 MB) | total | |
+|---|---|---|
+| PAIA 0.0.5 | 1,160,270 | **8.98%** |
+| xz -9e | 1,899,296 | 14.69% |
+
+Each came back the same; so did the 40 files named `.ani` there that are
+not ANIs (107 MB: 63.82%, xz 65.75%).
+
 Not yet good:
 - **Files that are not GIF** (or the non-GIF part of one): orders 0-3 lose
   to xz on some (an Inventor file, a Windows resource).

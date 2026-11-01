@@ -3,7 +3,9 @@
       (headers, palettes, extensions, and anything that is neither), and
     - for each GIF image whose LZW comes back exactly: its pixels and what
       rebuilds the LZW from them (paiagif.TLzwInfo);
-    - for each FLIC pixel chunk: its data, coded field by field (paiafli),
+    - for each FLIC pixel chunk: its data, coded field by field (paiafli);
+    - for each bitmap of an ANI's frames: its rows, coded byte by byte
+      (paiadib),
   all through one arithmetic coder.
 
   STREAM (version 2; proof of concept: not frozen)
@@ -15,7 +17,7 @@
       varint  record count
       raw     the bytes
       per record, in file order:
-        varint  kind: 0 a GIF image, 1 a FLIC chunk
+        varint  kind: 0 a GIF image, 1 a FLIC chunk, 2 an ANI bitmap
         varint  where its data goes in the raw bytes, from the previous one
       a GIF image:
         varint  mcs, width, height, left, top, transparent + 1, disposal,
@@ -31,7 +33,11 @@
       a FLIC chunk:
         varint  a new FLIC (then its width and height)
         varint  chunk type, data length
-        data    (paiafli.CodeChunk) }
+        data    (paiafli.CodeChunk)
+      an ANI bitmap:
+        varint  width, height, bits a pixel, data length
+        data    (paiadib.CodeDib), the previous bitmap of the same shape
+                as context }
 unit paiacodec;
 
 {$I paia.inc}
@@ -44,7 +50,7 @@ unit paiacodec;
 
 interface
 
-uses SysUtils, paiaarith, paiamodel, paiagif, paiafli;
+uses SysUtils, paiaarith, paiamodel, paiagif, paiafli, paiadib;
 
 const
   STREAM_VERSION = 2;
@@ -56,6 +62,7 @@ type
     pixels: SizeInt;
     exceptions: SizeInt;
     fliChunks: Integer;
+    dibs: Integer;
   end;
 
 { The codec stream of d. }
@@ -76,25 +83,38 @@ type
     px: TBytes;
     n: SizeInt;
     info: TLzwInfo;
-    kind: Integer;          { 0: a GIF image; 1: a FLIC chunk }
+    kind: Integer;          { 0: a GIF image; 1: a FLIC chunk; 2: an ANI frame's bitmap }
     fli: TFliChunk;
-    fdata: TBytes;          { a FLIC chunk's data }
+    dib: TDib;
+    fdata: TBytes;          { a FLIC chunk's or a bitmap's data }
   end;
   TTakenArray = array of TTaken;
 
 function StartOf(const t: TTaken): SizeInt;
 begin
-  if t.kind = 0 then Result := t.img.dataStart else Result := t.fli.dataStart;
+  case t.kind of
+    0: Result := t.img.dataStart;
+    1: Result := t.fli.dataStart;
+  else Result := t.dib.dataStart;
+  end;
 end;
 
 function EndOf(const t: TTaken): SizeInt;
 begin
-  if t.kind = 0 then Result := t.img.dataEnd else Result := t.fli.dataEnd;
+  case t.kind of
+    0: Result := t.img.dataEnd;
+    1: Result := t.fli.dataEnd;
+  else Result := t.dib.dataEnd;
+  end;
 end;
 
 procedure SetStart(var t: TTaken; p: SizeInt);
 begin
-  if t.kind = 0 then t.img.dataStart := p else t.fli.dataStart := p;
+  case t.kind of
+    0: t.img.dataStart := p;
+    1: t.fli.dataStart := p;
+  else t.dib.dataStart := p;
+  end;
 end;
 
 { The canvas of one GIF stream, as a viewer composes it image after image:
@@ -229,6 +249,7 @@ procedure CodeAll(cd: TCoder; var raw: TBytes; var tk: TTakenArray; var count: I
 var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     flags: Integer; canvas: TCanvas; cv, pw: TWords; newStream: Boolean;
     rawLen, flen: SizeInt; fm: TFliModel; fimg: TFliImage; fliStream, gifStream: Integer;
+    dm: TDibModel; prevDib: TBytes; k: Integer;
   { the value when encoding; when decoding, whatever was decoded }
   function V(x: Int64): QWord;
   begin
@@ -242,7 +263,7 @@ var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     Result := x;
   end;
 begin
-  canvas := nil; fm := nil; fimg := nil; fliStream := -1; gifStream := -1;
+  canvas := nil; fm := nil; fimg := nil; fliStream := -1; gifStream := -1; dm := nil;
   bm := TByteModel.Create(byteBits);
   pm := TPixelModel.Create(pixelBits);
   try
@@ -253,9 +274,26 @@ begin
     last := 0;
     for i := 0 to count - 1 do
       with tk[i] do begin
-        kind := Bounded(V(kind), 1);
+        kind := Bounded(V(kind), 2);
         pos := Bounded(V(Int64(StartOf(tk[i])) - Int64(last)), rawLen - last) + last;
         SetStart(tk[i], pos); last := pos;
+        if kind = 2 then begin
+          { an ANI frame's bitmap }
+          dib.width := Bounded(V(dib.width), 4096);
+          dib.height := Bounded(V(dib.height), 8192);
+          dib.bpp := Bounded(V(dib.bpp), 32);
+          flen := Bounded(V(Length(fdata)), maxOut);
+          { the previous frame of the same shape }
+          prevDib := nil;
+          for k := i - 1 downto 0 do
+            if (tk[k].kind = 2) and (tk[k].dib.width = dib.width) and
+               (tk[k].dib.height = dib.height) and (tk[k].dib.bpp = dib.bpp) then begin
+              prevDib := tk[k].fdata; Break;
+            end;
+          if dm = nil then dm := TDibModel.Create(pixelBits);
+          CodeDib(cd, dm, dib, fdata, flen, prevDib);
+          Continue;
+        end;
         if kind = 1 then begin
           { a FLIC chunk }
           newStream := (fimg = nil) or (cd.encoding and (fli.stream <> fliStream));
@@ -332,6 +370,7 @@ begin
         canvas.Paint(img, px, n);
       end;
   finally
+    dm.Free;
     fimg.Free;
     fm.Free;
     canvas.Free;
@@ -341,8 +380,8 @@ begin
 end;
 
 function Compress(const d: TBytes; out stats: TCodecStats): TBytes;
-var imgs: TGifImages; flis: TFliChunks; tk, all: TTakenArray; raw, body: TBytes;
-    i, j, count: Integer; q, o: SizeInt; cd: TCoder; t: TTaken; pixels: QWord;
+var imgs: TGifImages; flis: TFliChunks; dibs: TDibs; tk, all: TTakenArray; raw, body: TBytes;
+    i, j, count, n: Integer; q, o: SizeInt; cd: TCoder; t: TTaken; pixels: QWord;
     byteBits, pixelBits: Integer;
 begin
   stats := Default(TCodecStats);
@@ -363,23 +402,38 @@ begin
   stats.imagesTaken := count;
   SetLength(tk, count);
 
-  { the FLIC chunks, and both kinds in file order, without overlaps }
+  { the FLIC chunks and the ANI bitmaps; all kinds in file order, without
+    overlaps }
   flis := FindFliChunks(d);
   stats.fliChunks := Length(flis);
-  all := nil; SetLength(all, count + Length(flis));
-  i := 0; j := 0; count := 0; q := 0;
-  while (i < Length(tk)) or (j < Length(flis)) do begin
-    if (j >= Length(flis)) or ((i < Length(tk)) and (tk[i].img.dataStart < flis[j].dataStart)) then begin
-      t := tk[i]; Inc(i);
-    end else begin
-      t := Default(TTaken);
-      t.kind := 1; t.fli := flis[j];
-      t.fdata := Copy(d, t.fli.dataStart, t.fli.dataEnd - t.fli.dataStart);
-      Inc(j);
-    end;
-    if StartOf(t) < q then Continue;
-    all[count] := t; Inc(count);
-    q := EndOf(t);
+  dibs := FindDibs(d);
+  stats.dibs := Length(dibs);
+  all := nil; SetLength(all, count + Length(flis) + Length(dibs));
+  n := count;
+  for j := 0 to High(flis) do begin
+    t := Default(TTaken);
+    t.kind := 1; t.fli := flis[j];
+    t.fdata := Copy(d, t.fli.dataStart, t.fli.dataEnd - t.fli.dataStart);
+    all[n] := t; Inc(n);
+  end;
+  for j := 0 to High(dibs) do begin
+    t := Default(TTaken);
+    t.kind := 2; t.dib := dibs[j];
+    t.fdata := Copy(d, t.dib.dataStart, t.dib.dataEnd - t.dib.dataStart);
+    all[n] := t; Inc(n);
+  end;
+  for j := 0 to count - 1 do all[j] := tk[j];
+  { by start (an insertion sort: the lists are each sorted already) }
+  for i := 1 to n - 1 do begin
+    t := all[i]; j := i - 1;
+    while (j >= 0) and (StartOf(all[j]) > StartOf(t)) do begin all[j + 1] := all[j]; Dec(j); end;
+    all[j + 1] := t;
+  end;
+  count := 0; q := 0;
+  for i := 0 to n - 1 do begin
+    if StartOf(all[i]) < q then Continue;
+    all[count] := all[i]; Inc(count);
+    q := EndOf(all[i]);
   end;
   SetLength(all, count);
   tk := all;
