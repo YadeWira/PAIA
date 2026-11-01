@@ -149,7 +149,7 @@ var i: Integer;
 begin
   inherited Create;
   for i := 0 to High(tt) do tt[i].Init(tableBits, 255);
-  mx.Init(Length(tt) + 1, 32 * 12, 5);
+  mx.Init(Length(tt) + 1, 32 * 12, 1, 11);
 end;
 
 function TBitsModel.Code(cd: TCoder; v, nbits, kind, c1, c2: Integer): Integer;

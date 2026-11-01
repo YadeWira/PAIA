@@ -132,6 +132,19 @@ On files the sweep did not see: the GIF corpus 44.79% -> 42.07%, the
 optimized GIFs 54.78% -> 52.13%. The C model takes the mixer's shift
 from the Pascal side too, and gives the same bytes.
 
+The same sweep, model by model, on files of their own formats (0.0.11):
+
+| model | what it codes | change | set | gain |
+|---|---|---|---|---|
+| FLIC pixels and tokens | FLI/FLC chunks | both mixers at 1/2^11, a faster APM | 6 FLICs, 2.6 MB | -3.7% |
+| bitmap bytes (`TDibModel`) | ANI bitmaps, IFF ANIM planes, VP8L literals | mixer at 1/2^11 | 4 ANIs, 4 ANIMs, 4 WebPs, 10.3 MB | -3.5% |
+| VP8L tokens | VP8L structure and symbols | mixer at 1/2^11 | 4 lossless WebPs | -0.7% |
+| IFF ANIM tokens | ANIM structure | mixer at 1/2^11 | the 14 ANIMs | -0.7% |
+| plain bytes | headers, palettes, other files | mixer at 2/2^10 | 21 files that are not FLICs | -1.8% |
+
+Counters that stop slowing down sooner, or later, did not help any of
+them (unlike GIF's).
+
 ## FLI and FLC (`pas/paiafli.pas`)
 
 Autodesk Animator's FLICs (8 bits a pixel) keep their frames as chunks of
@@ -159,7 +172,8 @@ chunks, 16-bit FLICs and unknown chunks stay with the plain bytes.
 
 | 29 FLICs of the sample corpus (18.1 MB) | total | |
 |---|---|---|
-| PAIA 0.0.4 | 5,860,651 | **32.43%** |
+| PAIA 0.0.4 | 5,860,651 | 32.43% |
+| PAIA 0.0.11 (learning rates) | 5,614,008 | **31.07%** |
 | xz -9e | 8,394,672 | 46.45% |
 
 Each came back the same (and the 22 files named `.fli`/`.flc` there that
@@ -182,7 +196,8 @@ model.
 | 26 ANIs of the sample corpus (12.9 MB) | total | |
 |---|---|---|
 | PAIA 0.0.5 | 1,160,270 | 8.98% |
-| PAIA 0.0.7 (repeated frames as references) | 1,161,523 | **8.98%** |
+| PAIA 0.0.7 (repeated frames as references) | 1,161,523 | 8.98% |
+| PAIA 0.0.11 (learning rates) | 1,055,316 | **8.16%** |
 | xz -9e | 1,899,296 | 14.69% |
 
 Each came back the same; so did the 40 files named `.ani` there that are
@@ -210,7 +225,8 @@ back, compresses worse on every file tried, as it should.
 | 14 ANIMs of the sample corpus (6.1 MB) | total | |
 |---|---|---|
 | PAIA 0.0.5 (everything as plain bytes) | 3,336,322 | 54.47% |
-| PAIA 0.0.6 | 2,842,474 | **46.41%** |
+| PAIA 0.0.6 | 2,842,474 | 46.41% |
+| PAIA 0.0.11 (learning rates) | 2,760,975 | **45.08%** |
 | xz -9e | 3,198,248 | 52.22% |
 
 Each came back the same. Not taken yet: delta methods 3 and 74 ("J"),
@@ -298,7 +314,8 @@ compression, never exactness.
 |---|---|---|
 | PAIA 0.0.7 (VP8L) | 4,948,533 | 82.90% |
 | PAIA 0.0.8 (and VP8) | 4,835,369 | 81.00% |
-| PAIA 0.0.9 (VP8 contexts, a canvas for VP8L) | 4,683,816 | **78.46%** |
+| PAIA 0.0.9 (VP8 contexts, a canvas for VP8L) | 4,683,816 | 78.46% |
+| PAIA 0.0.11 (learning rates) | 4,610,306 | **77.23%** |
 | xz -9e | 5,312,648 | 88.99% |
 
 Lossy frames come out 4 to 9% smaller (sample1.webp, a still: 9.1%).

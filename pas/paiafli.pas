@@ -168,10 +168,10 @@ var i: Integer;
 begin
   inherited Create;
   for i := 0 to High(tt) do tt[i].Init(tableBits - 2, 60);
-  tmx.Init(Length(tt) + 2, 16 * 16, 6);
+  tmx.Init(Length(tt) + 2, 16 * 16, 1, 11);
   for i := 0 to High(pt) do pt[i].Init(tableBits, 255);
-  pmx.Init(Length(pt) + 2, 8 * 16 * 2, 4);
-  papm.Init(257 * 256, 7);
+  pmx.Init(Length(pt) + 2, 8 * 16 * 2, 1, 11);
+  papm.Init(257 * 256, 6);
   mm.Init(20);
 end;
 

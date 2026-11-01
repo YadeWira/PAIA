@@ -152,7 +152,7 @@ var i: Integer;
 begin
   inherited Create;
   for i := 0 to High(t) do t[i].Init(tableBits, 255);
-  mx.Init(Length(t) + 2, 8 * 8 * 2, 4);
+  mx.Init(Length(t) + 2, 8 * 8 * 2, 1, 11);
   apm.Init(8 * 256, 7);
   mm.Init(20);
 end;

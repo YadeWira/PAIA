@@ -151,7 +151,7 @@ begin
   inherited Create;
   t0.Init(10, 60);
   for i := 1 to 3 do t[i].Init(tableBits, 60);
-  mx.Init(6, 2 * 256 * 2, 6);
+  mx.Init(6, 2 * 256 * 2, 2);
   mm[0].Init(tableBits - 2);
   mm[1].Init(16);
   apm.Init(2 * 256 * 256, 7);       { streams 0 and 1 }
