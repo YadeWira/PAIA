@@ -50,6 +50,10 @@ code. libwebp is distributed under the BSD 3-Clause license:
 VP8L (pas/paiawebp.pas): written from the WebP Lossless Bitstream
 Specification; the distance map (CODE_TO_PLANE) is the specification's.
 
+The zpaq-std plugin's heap on Windows (pas/plugin/paiaheap.pas): taken
+from PJA (pas/pjaheap.pas, github.com/YadeWira/PJA), same author and
+license; it works around FreePascal 3.2.2's heap lock in a DLL.
+
 Credits (ideas, no code taken)
 ------------------------------
 

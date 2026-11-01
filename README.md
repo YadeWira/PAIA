@@ -74,6 +74,8 @@ handles](https://github.com/YadeWira/PAIA/wiki/What-PAIA-handles),
 [benchmarks](https://github.com/YadeWira/PAIA/wiki/Benchmarks) and [how it
 works](https://github.com/YadeWira/PAIA/wiki/How-it-works). The codec's
 full notes, with every measurement, are in [doc/CODEC.md](doc/CODEC.md).
+PAIA in [zpaq-std](https://github.com/YadeWira/zpaq-std) archives, as an
+experimental plugin: [doc/PLUGIN.md](doc/PLUGIN.md).
 
 ## Building
 

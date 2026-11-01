@@ -5,7 +5,8 @@
 # vectors, every sample of the repository compressed by the three (the same
 # .paia from each) and extracted (each must come back byte for byte), and
 # the SHA-256 of all the .paia files written to hash.txt: the format makes
-# the same bytes on every platform, which the last CI job checks.
+# the same bytes on every platform, which the last CI job checks. Then the
+# zpaq-std plugin, built (pas/plugin/build.sh).
 #
 #   FPC=<compiler> CC=<C compiler> PAIA_OUT=<dir> sh .github/test.sh
 set -eu
@@ -69,3 +70,8 @@ echo "== the streams"
 (cd "$OUT/p/paia" && for f in */*.paia; do $SHA "$f"; done | sed 's/ [ *]/  /' | sort) > "$OUT/streams.txt"
 $SHA "$OUT/streams.txt" | cut -c1-64 > hash.txt
 echo "$(wc -l < "$OUT/streams.txt" | tr -d ' ') .paia files, SHA-256 of their list: $(cat hash.txt)"
+
+echo "== the zpaq-std plugin"
+FPC="$FPC" bash pas/plugin/build.sh "$OUT/plugin" > "$OUT/plugin.log" 2>&1 \
+  || { cat "$OUT/plugin.log"; echo "FAIL: the plugin did not build"; exit 1; }
+tail -1 "$OUT/plugin.log"
