@@ -27,6 +27,7 @@ program paiacli;
 uses SysUtils, Classes, paiablake3, paiacodec;
 
 const
+  PAIA_VERSION = '0.1.0';
   MAGIC: array[0..3] of Char = ('P', 'A', 'I', 'A');
   FORMAT_VERSION = 1;
   FLAG_STORED = 1;
@@ -200,9 +201,14 @@ end;
 
 var i, failures, files: Integer; cmd: string; names: TStringList;
 begin
+  if (ParamCount = 1) and ((ParamStr(1) = '--version') or (ParamStr(1) = '-V')) then begin
+    Writeln('paia ', PAIA_VERSION);
+    Halt(0);
+  end;
   if ParamCount < 2 then begin
-    Writeln('paia 0.0.11 (proof of concept): lossless recompression of animated images');
+    Writeln('paia ', PAIA_VERSION, ': lossless recompression of animated images');
     Writeln('usage: paia a|x|t [-o DIR] [-f] [-q] FILE...');
+    Writeln('       paia --version');
     Halt(2);
   end;
   cmd := ParamStr(1);

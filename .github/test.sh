@@ -31,6 +31,7 @@ build() {
 build paia uf -O3 -dPAIA_FAST -Fo"$OUT/c" -Fl"$OUT/c"
 build paia-pure up -O3 -dPAIA_FAST -dPAIA_PURE
 build paia-checked uk -O2
+"$OUT/paia$EXE" --version
 $FPC -O2 -Fupas -Fipas -FU"$OUT/uk" -o"$OUT/test_blake3$EXE" pas/tests/test_blake3.pas > "$OUT/fpc.log" 2>&1 \
   || { cat "$OUT/fpc.log"; echo "FAIL: test_blake3 did not build"; exit 1; }
 

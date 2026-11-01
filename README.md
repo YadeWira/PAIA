@@ -6,7 +6,7 @@
 in FreePascal with C and embedded assembly; no libraries.
 
 > **Status: proof of concept.** GIF, FLI/FLC, ANI, IFF ANIM and WebP work;
-> nothing to download yet. As in the whole family, the formats freeze at
+> the first release is 0.1.0. As in the whole family, the formats freeze at
 > 1.0.0: until then the stream and the container may change, and a file
 > made by a 0.x version may not open in a later one; from 1.0.0 on, what
 > is published can be read forever.
@@ -58,6 +58,14 @@ The animated formats PAIA aims to take ([doc/FORMATS.md](doc/FORMATS.md)):
 | IFF ANIM | `.anim`, `.iff` | ByteRun and frame deltas | works (delta method 5) |
 
 APNG, MNG and JNG belong to PPA; JPEG XL is left aside.
+
+## Install
+
+Download the command for your platform from the [latest
+release](https://github.com/YadeWira/PAIA/releases/latest): Linux (x86-64,
+arm64, x86), macOS (Apple silicon) or Windows (x64, x86); `SHA256SUMS`
+there has every archive's hash. The command's manual is
+[doc/CLI.md](doc/CLI.md).
 
 ## More
 
