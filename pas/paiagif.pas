@@ -45,8 +45,13 @@ type
     dataStart: SizeInt;     { the first sub-block's length byte }
     dataEnd: SizeInt;       { just after the terminating empty sub-block }
     mcs: Integer;
-    width, height: Integer;
+    left, top, width, height: Integer;
     interlaced: Boolean;
+    { from the GIF stream and the image's graphic control extension }
+    stream: Integer;          { which GIF stream of the file }
+    canvasW, canvasH: Integer;
+    transparent: Integer;     { the transparent index, or -1 }
+    disposal: Integer;        { what happens to it before the next image: 0-7 }
   end;
   TGifImages = array of TGifImage;
 
@@ -109,9 +114,11 @@ begin
 end;
 
 function FindGifImages(const d: TBytes): TGifImages;
-var pos, q, len, e: SizeInt; n: Integer; flags: Byte; img: TGifImage; ok: Boolean;
+var pos, q, len, e: SizeInt; n, streams, cw, ch, transp, disp: Integer; flags: Byte;
+    img: TGifImage; ok: Boolean;
 begin
-  Result := nil; n := 0;
+  Result := nil; n := 0; streams := 0;
+  img := Default(TGifImage);
   len := Length(d);
   pos := 0;
   while pos < len do begin
@@ -120,19 +127,29 @@ begin
     q := pos + 13;
     if q > len then Break;
     flags := d[pos + 10];
+    cw := d[pos + 6] or (d[pos + 7] shl 8);
+    ch := d[pos + 8] or (d[pos + 9] shl 8);
     if (flags and $80) <> 0 then q := q + 3 * (SizeInt(2) shl (flags and 7));
+    transp := -1; disp := 0;
     ok := True;
     while ok do begin
       if q >= len then begin ok := False; Break; end;
       case d[q] of
         $21: begin
           if q + 2 > len then begin ok := False; Break; end;
+          { the graphic control extension: for the next image }
+          if (d[q + 1] = $F9) and (q + 7 < len) and (d[q + 2] >= 4) then begin
+            disp := (d[q + 3] shr 2) and 7;
+            if (d[q + 3] and 1) <> 0 then transp := d[q + 6] else transp := -1;
+          end;
           e := SkipBlocks(d, q + 2);
           if e < 0 then begin ok := False; Break; end;
           q := e;
         end;
         $2C: begin
           if q + 11 > len then begin ok := False; Break; end;
+          img.left := d[q + 1] or (d[q + 2] shl 8);
+          img.top := d[q + 3] or (d[q + 4] shl 8);
           img.width := d[q + 5] or (d[q + 6] shl 8);
           img.height := d[q + 7] or (d[q + 8] shl 8);
           flags := d[q + 9];
@@ -146,6 +163,10 @@ begin
           e := SkipBlocks(d, q + 1);
           if e < 0 then begin ok := False; Break; end;
           img.dataEnd := e;
+          img.stream := streams;
+          img.canvasW := cw; img.canvasH := ch;
+          img.transparent := transp; img.disposal := disp;
+          transp := -1; disp := 0;
           if (img.mcs >= 1) and (img.mcs <= 8) then begin
             if n >= Length(Result) then SetLength(Result, n * 2 + 8);
             Result[n] := img; Inc(n);
@@ -159,6 +180,7 @@ begin
     end;
     if q <= pos then q := pos + 1;
     pos := q;
+    Inc(streams);
     if not ok then Break;
   end;
   SetLength(Result, n);

@@ -153,18 +153,20 @@ static inline void apm_update(const TPixState *s, const Apm *a, const ApmPos *po
 
 /* ---- the pixels ---- */
 
+typedef struct { int32_t run, cntT, cntV, pad; } TRun;
+
 void paia_code_pixels(TPixState *s, TCState *cd, uint8_t *px, int64_t i0, int64_t i1,
-                      int64_t width, int32_t bits, const uint8_t *prev, int64_t prevLen,
-                      int32_t *runp) {
+                      int64_t n, int64_t width, int32_t bits, const uint16_t *cv,
+                      const uint16_t *pw, int32_t transp, TRun *r) {
   int64_t i, w = width, slot[PIXEL_CONTEXTS], fidx[FLAG_CONTEXTS];
   uint64_t base[PIXEL_CONTEXTS];
   int32_t xin[PIXEL_CONTEXTS + 1], fin[FLAG_CONTEXTS + 1];
-  int run = *runp, hasPrev = prev != 0;
+  int run = r->run, cntT = r->cntT, cntV = r->cntV;
   int j;
   for (j = 0; j < PIXEL_CONTEXTS; j++) slot[j] = 0;
   for (i = i0; i < i1; i++) {
     int64_t x = i % w, y = i / w;
-    int L, U, UL, UR, LL, UU, PV, PR, PD, cand, pat, v, node, sub, bit, b, pm, pa, pr12, sel;
+    int L, U, UL, UR, LL, UU, PV, PR, PD, PW, cand, pat, v, node, sub, bit, b, pm, pa, pr12, sel;
     int32_t *wsel;
     ApmPos ap1, ap2;
     L = x > 0 ? px[i - 1] : NONE;
@@ -175,12 +177,13 @@ void paia_code_pixels(TPixState *s, TCState *cd, uint8_t *px, int64_t i0, int64_
       UR = x + 1 < width ? px[i - w + 1] : NONE;
     } else { U = NONE; UL = NONE; UR = NONE; }
     UU = y > 1 ? px[i - 2 * w] : NONE;
-    if (hasPrev && i < prevLen) {
-      PV = prev[i];
-      PR = (x + 1 < width && i + 1 < prevLen) ? prev[i + 1] : NONE;
-      PD = (i + w < prevLen) ? prev[i + w] : NONE;
+    if (cv) {
+      PV = cv[i];
+      PR = (x + 1 < width && i + 1 < n) ? cv[i + 1] : NONE;
+      PD = (i + w < n) ? cv[i + w] : NONE;
     } else { PV = NONE; PR = NONE; PD = NONE; }
-    if (PV != NONE) cand = PV;
+    PW = pw ? pw[i] : NONE;
+    if (PV != NONE) cand = (transp >= 0 && cntT >= cntV) ? transp : PV;
     else if (L != NONE) cand = L;
     else if (U != NONE) cand = U;
     else cand = 0;
@@ -190,11 +193,12 @@ void paia_code_pixels(TPixState *s, TCState *cd, uint8_t *px, int64_t i0, int64_
     /* the flag */
     pat = (cand == L) + 2 * (cand == U) + 4 * (cand == UL) + 8 * (cand == UR)
         + 16 * (cand == PR) + 32 * (cand == PD) + 64 * (L == U) + 128 * (PV != NONE)
-        + 256 * (cand == LL) + 512 * (cand == UU);
+        + 256 * (cand == LL) + 512 * (cand == UU)
+        + 1024 * (PW == 257) + 2048 * (transp >= 0 && cand == transp);
     fidx[0] = pat & s->ft[0].mask;
     fidx[1] = (int64_t)hash(pat, run) & s->ft[1].mask;
     fidx[2] = (int64_t)hash(hash(L * 512 + U, cand), 11) & s->ft[2].mask;
-    fidx[3] = (int64_t)hash(hash(PV * 512 + PR, PD * 512 + L), 12) & s->ft[3].mask;
+    fidx[3] = (int64_t)hash(hash(PV * 512 + PR, PD * 512 + L), 12 + PW * 16) & s->ft[3].mask;
     fidx[4] = (int64_t)hash(hash(L * 512 + U, UL * 512 + UR), cand + 13 * 512) & s->ft[4].mask;
     fidx[5] = (int64_t)hash(hash(UU * 512 + LL, cand), pat + 14 * 2048) & s->ft[5].mask;
     for (j = 0; j < FLAG_CONTEXTS; j++) fin[j] = s->stretchTab[p12(&s->ft[j], fidx[j])];
@@ -209,9 +213,24 @@ void paia_code_pixels(TPixState *s, TCState *cd, uint8_t *px, int64_t i0, int64_
     if (bit) {
       if (run < 15) run++;
       px[i] = (uint8_t)cand;
+      if (PV != NONE) {
+        if (cand == transp) cntT++;
+        if (cand == PV) cntV++;
+      }
       continue;
     }
     run = 0;
+
+    /* the pixel's bits are predicted from what is seen: a transparent
+       neighbour shows the canvas under it */
+    if (transp >= 0 && cv) {
+      if (L == transp && cv[i - 1] != NONE) L = cv[i - 1];
+      if (LL == transp && cv[i - 2] != NONE) LL = cv[i - 2];
+      if (U == transp && cv[i - w] != NONE) U = cv[i - w];
+      if (UL == transp && cv[i - w - 1] != NONE) UL = cv[i - w - 1];
+      if (UR == transp && cv[i - w + 1] != NONE) UR = cv[i - w + 1];
+      if (UU == transp && cv[i - 2 * w] != NONE) UU = cv[i - 2 * w];
+    }
 
     base[0] = (uint64_t)bits * 512 + (uint64_t)cand;
     base[1] = hash(L, 1);
@@ -220,9 +239,9 @@ void paia_code_pixels(TPixState *s, TCState *cd, uint8_t *px, int64_t i0, int64_
     base[4] = hash(hash(L * 512 + U, UL * 512 + UR), 4);
     base[5] = hash(hash(L * 512 + LL, U * 512 + UU), 5);
     base[6] = hash(hash(PV, L * 512 + U), 6);
-    base[7] = hash(hash(PV * 512 + PR, PD), 7);
+    base[7] = hash(hash(PV * 512 + PR, PD), 7 + PW * 16);
     base[8] = hash(hash(UL * 512 + U, UR), 8);
-    sel = (L == U) + 2 * (hasPrev && PV == L) + 4 * (U == UR);
+    sel = (L == U) + 2 * (PV != NONE && PV == L) + 4 * (U == UR);
     node = 1; sub = 1;
     for (b = bits - 1; b >= 0; b--) {
       if (b == bits - 1 || b == 3) {
@@ -245,6 +264,10 @@ void paia_code_pixels(TPixState *s, TCState *cd, uint8_t *px, int64_t i0, int64_
       sub = sub * 2 + bit;
     }
     px[i] = (uint8_t)(node - (1 << bits));
+    if (PV != NONE) {
+      if (px[i] == transp) cntT++;
+      if (px[i] == PV) cntV++;
+    }
   }
-  *runp = run;
+  r->run = run; r->cntT = cntT; r->cntV = cntV;
 }

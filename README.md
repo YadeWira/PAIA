@@ -13,7 +13,7 @@ paia x anim.paia         # -> anim.gif, the same file byte for byte
 paia t anim.paia         # extract in memory and check
 ```
 
-On the 62 GIF files of the sample corpus: **45.67%** of their size, against
+On the 62 GIF files of the sample corpus: **44.82%** of their size, against
 95.60% for xz -9e and 7-Zip, every file coming back the same
 ([doc/CODEC.md](doc/CODEC.md)).
 

@@ -37,6 +37,8 @@ const
   FLAG_CONTEXTS = 6;
 
 type
+  TWords = array of Word;
+
   TByteModel = class
   private
     t0: TCounters;                  { order 0, direct }
@@ -64,12 +66,15 @@ type
   public
     constructor Create(tableBits: Integer);
     { Codes px[0..n) (decoding: fills it), an image `width` wide, with
-      `bits` bits a pixel; prev: the previous frame's pixels or nil. }
+      `bits` bits a pixel. cv: for each pixel, the canvas under it before
+      this image (256: none); pw: the previous image's pixel at the same
+      place (256: none, 257: it was transparent there); either may be nil.
+      transp: this image's transparent index, or -1. }
     procedure CodeImage(cd: TCoder; var px: TBytes; n: SizeInt; width, bits: Integer;
-                        const prev: TBytes);
+                        const cv, pw: TWords; transp: Integer);
     { the reference: what paiapix.c does, in Pascal }
     procedure CodeImagePascal(cd: TCoder; var px: TBytes; n: SizeInt; width, bits: Integer;
-                              const prev: TBytes);
+                              const cv, pw: TWords; transp: Integer);
   end;
 
 { True when the C model is linked in (the release build); the checked build
@@ -109,8 +114,12 @@ type
   end;
 {$packrecords default}
 
-procedure paia_code_pixels(s: Pointer; cd: Pointer; px: PByte; i0, i1, width: Int64;
-                           bits: LongInt; prev: PByte; prevLen: Int64; run: PLongInt);
+type
+  { what has to survive from one batch to the next }
+  TCRun = record run, cntT, cntV, pad: LongInt; end;
+
+procedure paia_code_pixels(s: Pointer; cd: Pointer; px: PByte; i0, i1, n, width: Int64;
+                           bits: LongInt; cv, pw: PWord; transp: LongInt; r: Pointer);
   cdecl; external name 'paia_code_pixels';
 {$endif}
 
@@ -212,10 +221,10 @@ begin
 end;
 
 procedure TPixelModel.CodeImage(cd: TCoder; var px: TBytes; n: SizeInt; width, bits: Integer;
-                                const prev: TBytes);
+                                const cv, pw: TWords; transp: Integer);
 {$ifdef PAIA_C}
 const BATCH = 65536;
-var st: TPixState; cs: TCState; j: Integer; i0, i1, need: Int64; run: LongInt;
+var st: TPixState; cs: TCState; j: Integer; i0, i1, need: Int64; r: TCRun; pcv, ppw: PWord;
   procedure C(var c: TCCounters; const t: TCounters);
   begin c.e := @t.e[0]; c.mask := t.mask; c.limit := t.limit; c.pad := 0; end;
 begin
@@ -231,7 +240,9 @@ begin
   st.fapm.t := @fapm.t[0]; st.fapm.rate := fapm.rate;
   st.stretchTab := @stretchTab[0]; st.squashTab := @squashTab[0];
   st.apmBase := @apmBase[0]; st.rateTab := @rateTab[0];
-  run := 0;
+  r.run := 0; r.cntT := Ord(transp >= 0); r.cntV := 0; r.pad := 0;
+  if cv <> nil then pcv := @cv[0] else pcv := nil;
+  if pw <> nil then ppw := @pw[0] else ppw := nil;
   i0 := 0;
   while i0 < n do begin
     i1 := i0 + BATCH; if i1 > n then i1 := n;
@@ -247,10 +258,7 @@ begin
       cs.x1 := cd.dec.x1; cs.x2 := cd.dec.x2; cs.x := cd.dec.x;
       cs.buf := @cd.dec.d[0]; cs.p := cd.dec.p; cs.last := cd.dec.last;
     end;
-    if prev <> nil then
-      paia_code_pixels(@st, @cs, @px[0], i0, i1, width, bits, @prev[0], Length(prev), @run)
-    else
-      paia_code_pixels(@st, @cs, @px[0], i0, i1, width, bits, nil, 0, @run);
+    paia_code_pixels(@st, @cs, @px[0], i0, i1, n, width, bits, pcv, ppw, transp, @r);
     if cd.encoding then begin
       cd.enc.x1 := cs.x1; cd.enc.x2 := cs.x2; cd.enc.n := cs.n;
     end else begin
@@ -261,23 +269,23 @@ begin
 end;
 {$else}
 begin
-  CodeImagePascal(cd, px, n, width, bits, prev);
+  CodeImagePascal(cd, px, n, width, bits, cv, pw, transp);
 end;
 {$endif}
 
 procedure TPixelModel.CodeImagePascal(cd: TCoder; var px: TBytes; n: SizeInt; width, bits: Integer;
-                                      const prev: TBytes);
+                                      const cv, pw: TWords; transp: Integer);
 const NONE = 256;
-var i: SizeInt; x, y, L, U, UL, UR, LL, UU, PV, PR, PD, v, node, sub, bit, b, j, pm, pa,
-    pr12, sel, cand, pat, run: Integer; fidx: array[0..FLAG_CONTEXTS - 1] of SizeInt;
-    hasPrev: Boolean; base: array[0..PIXEL_CONTEXTS - 1] of QWord;
+var i: SizeInt; x, y, L, U, UL, UR, LL, UU, PV, PR, PD, PW_, v, node, sub, bit, b, j, pm, pa,
+    pr12, sel, cand, pat, run, cntT, cntV: Integer; fidx: array[0..FLAG_CONTEXTS - 1] of SizeInt;
+    base: array[0..PIXEL_CONTEXTS - 1] of QWord;
     slot: array[0..PIXEL_CONTEXTS - 1] of SizeInt;
     w: SizeInt;
 begin
   if width < 1 then width := 1;
   w := width;
-  hasPrev := (prev <> nil);
   x := 0; y := 0; run := 0;
+  cntT := Ord(transp >= 0); cntV := 0;
   FillChar(slot, SizeOf(slot), 0);
   for i := 0 to n - 1 do begin
     if x > 0 then L := px[i - 1] else L := NONE;
@@ -288,12 +296,17 @@ begin
       if x + 1 < width then UR := px[i - w + 1] else UR := NONE;
     end else begin U := NONE; UL := NONE; UR := NONE; end;
     if y > 1 then UU := px[i - 2 * w] else UU := NONE;
-    if hasPrev and (i < Length(prev)) then begin
-      PV := prev[i];
-      if (x + 1 < width) and (i + 1 < Length(prev)) then PR := prev[i + 1] else PR := NONE;
-      if i + w < Length(prev) then PD := prev[i + w] else PD := NONE;
+    if cv <> nil then begin
+      PV := cv[i];
+      if (x + 1 < width) and (i + 1 < n) then PR := cv[i + 1] else PR := NONE;
+      if i + w < n then PD := cv[i + w] else PD := NONE;
     end else begin PV := NONE; PR := NONE; PD := NONE; end;
-    if PV <> NONE then cand := PV
+    if pw <> nil then PW_ := pw[i] else PW_ := NONE;
+    { the candidate: the canvas, or the transparent index if this image has
+      used it more than the canvas's value so far }
+    if PV <> NONE then begin
+      if (transp >= 0) and (cntT >= cntV) then cand := transp else cand := PV;
+    end
     else if L <> NONE then cand := L
     else if U <> NONE then cand := U
     else cand := 0;
@@ -303,11 +316,12 @@ begin
     { the flag: is it the candidate? }
     pat := Ord(cand = L) + 2 * Ord(cand = U) + 4 * Ord(cand = UL) + 8 * Ord(cand = UR)
          + 16 * Ord(cand = PR) + 32 * Ord(cand = PD) + 64 * Ord(L = U) + 128 * Ord(PV <> NONE)
-         + 256 * Ord(cand = LL) + 512 * Ord(cand = UU);
+         + 256 * Ord(cand = LL) + 512 * Ord(cand = UU)
+         + 1024 * Ord(PW_ = 257) + 2048 * Ord((transp >= 0) and (cand = transp));
     fidx[0] := pat and ft[0].mask;
     fidx[1] := Hash(pat, run) and ft[1].mask;
     fidx[2] := Hash(Hash(L * 512 + U, cand), 11) and ft[2].mask;
-    fidx[3] := Hash(Hash(PV * 512 + PR, PD * 512 + L), 12) and ft[3].mask;
+    fidx[3] := Hash(Hash(PV * 512 + PR, PD * 512 + L), 12 + PW_ * 16) and ft[3].mask;
     fidx[4] := Hash(Hash(L * 512 + U, UL * 512 + UR), cand + 13 * 512) and ft[4].mask;
     fidx[5] := Hash(Hash(UU * 512 + LL, cand), pat + 14 * 2048) and ft[5].mask;
     for j := 0 to High(ft) do fmx.Add(Stretch(ft[j].P12(fidx[j])));
@@ -322,12 +336,26 @@ begin
     if bit <> 0 then begin
       if run < 15 then Inc(run);
       px[i] := cand;
+      if PV <> NONE then begin
+        if cand = transp then Inc(cntT);
+        if cand = PV then Inc(cntV);
+      end;
       Inc(x);
       if x = width then begin x := 0; Inc(y); end;
       Continue;
     end;
     run := 0;
 
+    { the pixel's bits are predicted from what is seen: a transparent
+      neighbour shows the canvas under it }
+    if (transp >= 0) and (cv <> nil) then begin
+      if (L = transp) and (cv[i - 1] <> NONE) then L := cv[i - 1];
+      if (LL = transp) and (cv[i - 2] <> NONE) then LL := cv[i - 2];
+      if (U = transp) and (cv[i - w] <> NONE) then U := cv[i - w];
+      if (UL = transp) and (cv[i - w - 1] <> NONE) then UL := cv[i - w - 1];
+      if (UR = transp) and (cv[i - w + 1] <> NONE) then UR := cv[i - w + 1];
+      if (UU = transp) and (cv[i - 2 * w] <> NONE) then UU := cv[i - 2 * w];
+    end;
     base[0] := QWord(bits) * 512 + QWord(cand);
     base[1] := Hash(L, 1);
     base[2] := Hash(U, 2);
@@ -335,9 +363,9 @@ begin
     base[4] := Hash(Hash(L * 512 + U, UL * 512 + UR), 4);
     base[5] := Hash(Hash(L * 512 + LL, U * 512 + UU), 5);
     base[6] := Hash(Hash(PV, L * 512 + U), 6);
-    base[7] := Hash(Hash(PV * 512 + PR, PD), 7);
+    base[7] := Hash(Hash(PV * 512 + PR, PD), 7 + PW_ * 16);
     base[8] := Hash(Hash(UL * 512 + U, UR), 8);
-    sel := Ord(L = U) + 2 * Ord(hasPrev and (PV = L)) + 4 * Ord(U = UR);
+    sel := Ord(L = U) + 2 * Ord((PV <> NONE) and (PV = L)) + 4 * Ord(U = UR);
     node := 1; sub := 1;
     for b := bits - 1 downto 0 do begin
       { a new slot for the top group (bits above the low four) and the low four }
@@ -361,6 +389,10 @@ begin
       sub := sub * 2 + bit;
     end;
     px[i] := node - (1 shl bits);
+    if PV <> NONE then begin
+      if px[i] = transp then Inc(cntT);
+      if px[i] = PV then Inc(cntV);
+    end;
     Inc(x);
     if x = width then begin x := 0; Inc(y); end;
   end;

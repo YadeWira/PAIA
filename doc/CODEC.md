@@ -35,18 +35,29 @@ other...), and only images whose sub-blocks are complete.
 
 ### The models (`pas/paiamodel.pas`)
 
-- **Pixels**: first a flag, "it is the candidate" (the previous frame's
-  pixel, or else the left one, or else the one above), from six contexts
+- **The canvas.** Each GIF stream's images are composed as a viewer
+  composes them: each at its offset, transparent pixels leaving the
+  canvas as it was, and the previous image's disposal applied before the
+  next one (2: cleared, 3: put back as it was). Interlaced images are put
+  in place row by row. So each pixel has, under it, what the canvas
+  showed before this image, and what the previous image had at the same
+  place (or that it was transparent there): animations whose frames are
+  small rectangles at an offset, as most optimized GIFs are, get their
+  previous frame as context too.
+- **Pixels**: first a flag, "it is the candidate": the canvas under it,
+  or this image's transparent index if the image has used it more than
+  the canvas's value so far (or else the left pixel, or the one above), from six contexts
   of which pixels around equal the candidate, the run of hits so far, and
   the values around; most pixels of a GIF end there, with one binary
-  decision. When it is not the candidate: its bits from the top, nine
-  contexts (order 0; left;
+  decision. When it is not the candidate: its bits from the top, with the
+  neighbours as they are seen (a transparent one replaced by the canvas
+  under it), nine contexts (order 0; left;
   up; left and up; left, up, up-left, up-right; left, left-left, up,
   up-up; the previous frame's pixel with left and up; the previous frame's
   pixel, right and below; up-left, up, up-right), mixed by a logistic mixer
   chosen by the bit's position and whether left = up, the previous frame's
   pixel = left, up = up-right; then two adaptive probability maps (on left
-  and on up). "The previous frame" is the last image of the same width.
+  and on up). "The previous frame's pixel" is the canvas under it.
 - **Everything else** (headers, palettes, extensions, the side
   information): orders 0 to 3, mixed.
 
@@ -75,7 +86,14 @@ compared, all 62 coming back the same:
 | | total | |
 |---|---|---|
 | PAIA 0.0.1, first version | 12,155,500 | 46.82% |
-| PAIA 0.0.2 (the candidate flag) | 11,855,109 | **45.67%** |
+| PAIA 0.0.2 (the candidate flag) | 11,855,109 | 45.67% |
+| PAIA 0.0.3 (the canvas) | 11,636,648 | **44.82%** |
+
+The canvas matters most for optimized animations (frames as small
+rectangles at an offset, with transparency): earthmorph3.gif 58.1% ->
+44.1%, aol.gif 51.5% -> 39.7%, and on 8 GIFs made with ffmpeg and
+ImageMagick's `-layers Optimize` from videos of the sample corpus (13.1
+MB): 57.45% -> 54.79% (xz -9e: 98.15%).
 | xz -9e | 24,817,388 | 95.60% |
 | 7z -mx9 (LZMA2) | 24,817,882 | 95.60% |
 
@@ -95,10 +113,11 @@ extracting:
 | the candidate flag | 31.3 s | 13.8 s | 40.06% |
 | the pixel model in C | 22.4 s | 9.1 s | 40.06% |
 | contexts hashed only when the flag misses; gcc -O3 | 19.4 s | 7.9 s | 40.06% |
-| fewer passes choosing the clear rule | **18.7 s** | **7.7 s** | 40.06% |
+| fewer passes choosing the clear rule | 18.7 s | 7.7 s | 40.06% |
+| the canvas | **20.1 s** | **8.1 s** | **35.64%** |
 
-That is 2.7 million pixels a second extracting, 1.1 compressing; 3.3x and
-4x faster than the first version. The Pascal-only build: 29.7 s and 12.6 s.
+That is 2.6 million pixels a second extracting, 1.0 compressing; 3x and
+3.8x faster than the first version. The Pascal-only build: 29.7 s and 12.6 s.
 
 Not yet good:
 - **Files that are not GIF** (or the non-GIF part of one): orders 0-3 lose
