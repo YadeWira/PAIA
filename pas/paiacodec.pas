@@ -7,6 +7,8 @@
 
   STREAM (version 1; proof of concept: not frozen)
     version   1 B    1
+    tables    2 B    log2 of the byte model's and the pixel model's tables
+                     (12 to 22: from the sizes, so a small file clears little)
     coded     the rest:
       varint  raw length
       varint  image count
@@ -78,7 +80,7 @@ end;
 
 { Both directions in one: the same calls, in the same order. }
 procedure CodeAll(cd: TCoder; var raw: TBytes; var tk: TTakenArray; var count: Integer;
-                  maxOut: SizeInt);
+                  maxOut: SizeInt; byteBits, pixelBits: Integer);
 var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     widths: array of Integer; pxs: array of TBytes; flags: Integer;
     rawLen: SizeInt;
@@ -95,8 +97,8 @@ var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     Result := x;
   end;
 begin
-  bm := TByteModel.Create;
-  pm := TPixelModel.Create;
+  bm := TByteModel.Create(byteBits);
+  pm := TPixelModel.Create(pixelBits);
   try
     rawLen := Bounded(V(Length(raw)), maxOut);
     count := Bounded(V(count), rawLen + 1);
@@ -154,7 +156,7 @@ end;
 
 function Compress(const d: TBytes; out stats: TCodecStats): TBytes;
 var imgs: TGifImages; tk: TTakenArray; raw, body: TBytes; i, count: Integer;
-    q, o: SizeInt; cd: TCoder; t: TTaken;
+    q, o: SizeInt; cd: TCoder; t: TTaken; pixels: QWord; byteBits, pixelBits: Integer;
 begin
   stats := Default(TCodecStats);
   imgs := FindGifImages(d);
@@ -187,30 +189,38 @@ begin
   o := o + Length(d) - q;
   SetLength(raw, o);
 
+  pixels := 0;
+  for i := 0 to count - 1 do pixels := pixels + QWord(tk[i].n);
+  byteBits := TableBitsFor(Length(raw) + 64 * QWord(count));
+  pixelBits := TableBitsFor(pixels);
   cd := TCoder.CreateEncoder;
   try
-    CodeAll(cd, raw, tk, count, Length(d));
+    CodeAll(cd, raw, tk, count, Length(d), byteBits, pixelBits);
     body := cd.enc.Finish;
   finally
     cd.Free;
   end;
   Result := nil;
-  SetLength(Result, Length(body) + 1);
+  SetLength(Result, Length(body) + 3);
   Result[0] := STREAM_VERSION;
-  if Length(body) > 0 then Move(body[0], Result[1], Length(body));
+  Result[1] := byteBits;
+  Result[2] := pixelBits;
+  if Length(body) > 0 then Move(body[0], Result[3], Length(body));
 end;
 
 function Decompress(const s: TBytes; maxOut: SizeInt): TBytes;
 var tk: TTakenArray; raw, data: TBytes; i, count: Integer; cd: TCoder;
     total, o, q: SizeInt;
 begin
-  if (Length(s) < 1) or (s[0] <> STREAM_VERSION) then
+  if (Length(s) < 3) or (s[0] <> STREAM_VERSION) then
     raise Exception.Create('paiacodec: unknown stream version');
+  if (s[1] < 12) or (s[1] > 22) or (s[2] < 12) or (s[2] > 22) then
+    raise Exception.Create('paiacodec: damaged stream');
   raw := nil; count := 0;
-  cd := TCoder.CreateDecoder(s, 1, Length(s) - 1);
+  cd := TCoder.CreateDecoder(s, 3, Length(s) - 3);
   try
     tk := nil; count := 0;
-    CodeAll(cd, raw, tk, count, maxOut);
+    CodeAll(cd, raw, tk, count, maxOut, s[1], s[2]);
   finally
     cd.Free;
   end;

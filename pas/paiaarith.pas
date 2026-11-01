@@ -60,10 +60,11 @@ function Squash(x: Integer): Integer;
 
 type
   { Adaptive probabilities: 16 bits each, the rate slowing from 1/2 to
-    1/(limit + 2) as each one sees more. }
+    1/(limit + 2) as each one sees more. One 32-bit word each: the
+    probability (xor 1/2, so that a zeroed table is all 1/2) in the high
+    half, the count in the low one. }
   TCounters = record
-    p: array of Word;
-    n: array of Byte;
+    e: array of LongWord;
     mask: SizeInt;
     limit: Integer;
     procedure Init(bits: Integer; aLimit: Integer);
@@ -87,21 +88,25 @@ type
   { An adaptive probability map (secondary estimation): refines a
     probability given a context, interpolating between 33 buckets. }
   TApm = record
-    t: array of Word;
+    t: array of LongInt;      { minus the initial curve: zeroed = initial }
     idx: SizeInt;
-    rate: Integer;
+    bucket, rate: Integer;
     procedure Init(contexts: SizeInt; aRate: Integer);
     function Refine(p12: Integer; ctx: SizeInt): Integer;
     procedure Update(bit: Integer);
   end;
 
-implementation
-
+{ The tables, also handed to the C model (paiapix.c) so that both use the
+  very same numbers. }
 var
   stretchTab: array[0..4095] of SmallInt;
-  rateTab: array[0..255] of LongInt;
+  squashTab: array[0..4095] of SmallInt;
+  apmBase: array[0..32] of LongInt;
+  rateTab: array[0..1023] of LongInt;
 
-function Squash(x: Integer): Integer;
+implementation
+
+function SquashCalc(x: Integer): Integer;
 const t: array[0..32] of Integer = (
   1, 2, 3, 6, 10, 16, 27, 45, 73, 120, 194, 310, 488, 747, 1101,
   1546, 2047, 2549, 2994, 3348, 3607, 3785, 3901, 3975, 4024,
@@ -118,6 +123,13 @@ begin
   if Result > 4095 then Result := 4095;
 end;
 
+function Squash(x: Integer): Integer;
+begin
+  if x > 2047 then Exit(4095);
+  if x < -2047 then Exit(1);
+  Result := squashTab[x + 2048];
+end;
+
 function Stretch(p12: Integer): Integer; inline;
 begin
   Result := stretchTab[p12];
@@ -126,6 +138,7 @@ end;
 procedure BuildTables;
 var x, pi, v, j: Integer;
 begin
+  for x := -2048 to 2047 do squashTab[x + 2048] := SquashCalc(x);
   { the inverse of Squash: for each p, the x whose squash first reaches p }
   pi := 0;
   for x := -2047 to 2047 do begin
@@ -134,7 +147,8 @@ begin
     if v + 1 > pi then pi := v + 1;
   end;
   for j := pi to 4095 do stretchTab[j] := 2047;
-  for j := 0 to 255 do rateTab[j] := 65536 div (j + 2);
+  for j := 0 to 1023 do rateTab[j] := 65536 div (j + 2);
+  for j := 0 to 32 do apmBase[j] := SquashCalc((j - 16) * 128) * 16;
 end;
 
 { ---------------- coder ---------------- }
@@ -221,31 +235,29 @@ end;
 { ---------------- counters ---------------- }
 
 procedure TCounters.Init(bits: Integer; aLimit: Integer);
-var i: SizeInt;
 begin
-  p := nil; n := nil;
-  SetLength(p, SizeInt(1) shl bits);
-  SetLength(n, SizeInt(1) shl bits);
-  for i := 0 to High(p) do p[i] := 32768;
+  e := nil;
+  SetLength(e, SizeInt(1) shl bits);     { zeroed: every one at 1/2 }
   mask := (SizeInt(1) shl bits) - 1;
   limit := aLimit;
 end;
 
 function TCounters.P12(i: SizeInt): Integer; inline;
 begin
-  Result := p[i] shr 4;
+  Result := ((e[i] shr 16) xor $8000) shr 4;
 end;
 
 procedure TCounters.Update(i: SizeInt; bit: Integer); inline;
-var c: Integer; v: LongInt;
+var c: Integer; v: LongInt; x: LongWord;
 begin
-  c := n[i];
-  v := p[i];
+  x := e[i];
+  c := x and $FFFF;
+  v := (x shr 16) xor $8000;
   if bit <> 0 then v := v + (((65535 - v) * rateTab[c]) shr 16)
   else v := v - ((v * rateTab[c]) shr 16);
   if v < 32 then v := 32 else if v > 65503 then v := 65503;
-  p[i] := v;
-  if c < limit then n[i] := c + 1;
+  if c < limit then Inc(c);
+  e[i] := (LongWord(v xor $8000) shl 16) or LongWord(c);
 end;
 
 { ---------------- mixer ---------------- }
@@ -273,7 +285,7 @@ begin
   dot := 0;
   for i := 0 to k - 1 do dot := dot + Int64(x[i]) * w[cur + i];
   { weights are 16.16: the mixed stretch is dot / 65536 }
-  if dot >= 0 then dot := dot shr 16 else dot := -((-dot) shr 16);
+  dot := SarInt64(dot, 16);
   if dot > 2047 then dot := 2047 else if dot < -2047 then dot := -2047;
   pr := Squash(Integer(dot));
   Result := pr;
@@ -284,7 +296,7 @@ var i, err: Integer; v: LongInt;
 begin
   err := ((bit shl 12) - pr) * rate;
   for i := 0 to k - 1 do begin
-    v := w[cur + i] + ((x[i] * err) div 1024);
+    v := w[cur + i] + SarLongint(x[i] * err, 10);
     if v > 16777216 then v := 16777216 else if v < -16777216 then v := -16777216;
     w[cur + i] := v;
   end;
@@ -294,13 +306,9 @@ end;
 { ---------------- APM ---------------- }
 
 procedure TApm.Init(contexts: SizeInt; aRate: Integer);
-var i, j: SizeInt;
 begin
   t := nil;
   SetLength(t, contexts * 33);
-  for i := 0 to contexts - 1 do
-    for j := 0 to 32 do
-      t[i * 33 + j] := Squash((Integer(j) - 16) * 128) * 16;
   rate := aRate; idx := 0;
 end;
 
@@ -310,16 +318,19 @@ begin
   s := Stretch(p12) + 2048;          { 1 .. 4095 }
   w := s and 127;
   idx := ctx * 33 + (s shr 7);
-  Result := (t[idx] * (128 - w) + t[idx + 1] * w) shr 11;
-  if w >= 64 then Inc(idx);          { the nearer bucket learns }
+  Result := ((t[idx] + apmBase[s shr 7]) * (128 - w)
+             + (t[idx + 1] + apmBase[(s shr 7) + 1]) * w) shr 11;
+  bucket := s shr 7;
+  if w >= 64 then begin Inc(idx); Inc(bucket); end;          { the nearer bucket learns }
   if Result < 1 then Result := 1 else if Result > 4095 then Result := 4095;
 end;
 
 procedure TApm.Update(bit: Integer);
-var g: LongInt;
+var g, v: LongInt;
 begin
   g := (bit shl 16) + (bit shl rate) - bit - bit;
-  t[idx] := t[idx] + ((g - t[idx]) div (LongInt(1) shl rate));
+  v := t[idx] + apmBase[bucket];
+  t[idx] := t[idx] + SarLongint(g - v, rate);
 end;
 
 initialization

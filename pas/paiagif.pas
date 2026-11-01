@@ -331,10 +331,13 @@ begin
 end;
 
 { Counts (and with keep, records) the exceptions to `rules` of the code
-  sequence; -1 if the sequence is not one the machine accepts. }
+  sequence; -1 if the sequence is not one the machine accepts. Stops
+  counting past `limit` (returns limit + 1): a worse candidate need not be
+  run to its end. }
 function Exceptions(const px: TBytes; n: SizeInt; mcs: Integer;
                     const codes: TIntArray; nCodes: SizeInt; const rules: TLzwRules;
-                    keep: Boolean; var excK, excCode: TIntArray): SizeInt;
+                    keep: Boolean; var excK, excCode: TIntArray;
+                    limit: SizeInt = High(SizeInt) - 1): SizeInt;
 var z: TLzw; k, pos: SizeInt; pred, c, f, l: Integer;
 begin
   z.Init(mcs);
@@ -351,6 +354,7 @@ begin
         excK[Result] := k; excCode[Result] := c;
       end;
       Inc(Result);
+      if Result > limit then Exit;
     end;
     if not z.Apply(c, f, l) then Exit(-1);
     pos := pos + l;
@@ -425,22 +429,24 @@ begin
     end;
     if not z.Apply(codes[i], f, l) then Break;
   end;
-  r.clearAt := 0;
   dummyK := nil; dummyC := nil;
-  best := Exceptions(px, n, img.mcs, codes, nCodes, r, False, dummyK, dummyC);
-  if best < 0 then Exit(False);
-  info.rules := r;
-  { the three most frequent candidates }
-  for j := 0 to 2 do begin
-    nb := -1; cnt := 0;
-    for i := 0 to High(cand) do
-      if candCount[i] > cnt then begin cnt := candCount[i]; nb := i; end;
-    if nb < 0 then Break;
-    candCount[nb] := 0;
-    r.clearAt := cand[nb];
-    i := Exceptions(px, n, img.mcs, codes, nCodes, r, False, dummyK, dummyC);
-    if (i >= 0) and (i < best) then begin best := i; info.rules := r; end;
+  { the three most frequent candidates, the most frequent first (usually the
+    best, so that the others stop early), then no automatic clear }
+  best := -1;
+  for j := 0 to 3 do begin
+    if j < 3 then begin
+      nb := -1; cnt := 0;
+      for i := 0 to High(cand) do
+        if candCount[i] > cnt then begin cnt := candCount[i]; nb := i; end;
+      if nb < 0 then Continue;
+      candCount[nb] := 0;
+      r.clearAt := cand[nb];
+    end else r.clearAt := 0;
+    if best < 0 then i := Exceptions(px, n, img.mcs, codes, nCodes, r, False, dummyK, dummyC)
+    else i := Exceptions(px, n, img.mcs, codes, nCodes, r, False, dummyK, dummyC, best);
+    if (i >= 0) and ((best < 0) or (i < best)) then begin best := i; info.rules := r; end;
   end;
+  if best < 0 then Exit(False);
   Exceptions(px, n, img.mcs, codes, nCodes, info.rules, True, info.excK, info.excCode);
 
   { 3. what follows the last code }

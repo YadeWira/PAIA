@@ -3,6 +3,7 @@
 # with the original, and adds up the sizes against xz -9 and 7z (LZMA2, -mx9).
 # usage: scripts/bench_dir.sh PAIA_BINARY DIR WORKDIR
 set -euo pipefail
+export LC_ALL=C
 PAIA=$1; DIR=$2; W=$3
 rm -rf "$W"; mkdir -p "$W/p" "$W/x"
 tin=0; tp=0; txz=0; t7=0; bad=0; n=0
