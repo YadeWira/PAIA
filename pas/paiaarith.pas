@@ -78,8 +78,9 @@ type
     nIn, nSets: Integer;
     w: array of LongInt;
     x: array of LongInt;
-    k, cur, pr, rate: Integer;
-    procedure Init(inputs, sets, aRate: Integer);
+    k, cur, pr, rate, shift: Integer;
+    { shift: the learning rate is rate / 2^shift (10 unless said) }
+    procedure Init(inputs, sets, aRate: Integer; aShift: Integer = 10);
     procedure Add(st: Integer); inline;
     function Mix(ctx: Integer): Integer;
     procedure Update(bit: Integer);
@@ -286,10 +287,10 @@ end;
 
 { ---------------- mixer ---------------- }
 
-procedure TMixer.Init(inputs, sets, aRate: Integer);
+procedure TMixer.Init(inputs, sets, aRate: Integer; aShift: Integer);
 var i: Integer;
 begin
-  nIn := inputs; nSets := sets; rate := aRate;
+  nIn := inputs; nSets := sets; rate := aRate; shift := aShift;
   w := nil; x := nil;
   SetLength(w, inputs * sets);
   SetLength(x, inputs);
@@ -320,7 +321,7 @@ var i, err: Integer; v: LongInt;
 begin
   err := ((bit shl 12) - pr) * rate;
   for i := 0 to k - 1 do begin
-    v := w[cur + i] + SarLongint(x[i] * err, 10);
+    v := w[cur + i] + SarLongint(x[i] * err, shift);
     if v > 16777216 then v := 16777216 else if v < -16777216 then v := -16777216;
     w[cur + i] := v;
   end;

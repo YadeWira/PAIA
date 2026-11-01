@@ -14,8 +14,8 @@
       (paiavp8),
   all through one arithmetic coder.
 
-  STREAM (version 4; proof of concept: not frozen)
-    version   1 B    4
+  STREAM (version 5; proof of concept: not frozen)
+    version   1 B    5
     tables    2 B    log2 of the byte model's and the pixel model's tables
                      (12 to 22: from the sizes, so a small file clears little)
     coded     the rest:
@@ -76,7 +76,7 @@ interface
 uses SysUtils, paiaarith, paiamodel, paiagif, paiafli, paiadib, paiaiff, paiawebp, paiavp8;
 
 const
-  STREAM_VERSION = 4;
+  STREAM_VERSION = 5;
 
 type
   TCodecStats = record

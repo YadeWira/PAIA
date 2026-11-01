@@ -43,12 +43,13 @@ type
 
   TVp8Model = class
   private
-    t: array[0..2] of TCounters;
+    t: array[0..4] of TCounters;
     mx: TMixer;
-    apm: TApm;
+    apm, apm2: TApm;
   public
     constructor Create(tableBits: Integer);
-    function CodeBit(cd: TCoder; bit, prob: Integer; h1, h2, h3: QWord; sel: Integer): Integer;
+    function CodeBit(cd: TCoder; bit, prob: Integer; h1, h2, h3: QWord; sel: Integer;
+                     h4: QWord = 0; h5: QWord = 0): Integer;
   end;
 
 function FindVp8Streams(const d: TBytes): TVp8Streams;
@@ -84,30 +85,35 @@ var i, s: Integer;
 begin
   inherited Create;
   for i := 0 to High(t) do t[i].Init(tableBits, 255);
-  mx.Init(Length(t) + 2, 64, 3);
+  mx.Init(Length(t) + 2, 256, 1);
   { at first, VP8's own probability alone }
-  for s := 0 to 63 do
+  for s := 0 to 255 do
     for i := 0 to mx.nIn - 1 do
       if i = 0 then mx.w[s * mx.nIn + i] := 65536 else mx.w[s * mx.nIn + i] := 0;
   apm.Init(256 * 4, 6);
+  apm2.Init(256, 6);
 end;
 
-function TVp8Model.CodeBit(cd: TCoder; bit, prob: Integer; h1, h2, h3: QWord; sel: Integer): Integer;
-var p0, pm, pa, j: Integer; idx: array[0..2] of SizeInt;
+function TVp8Model.CodeBit(cd: TCoder; bit, prob: Integer; h1, h2, h3: QWord; sel: Integer;
+                           h4: QWord; h5: QWord): Integer;
+var p0, pm, pa, pb, j: Integer; idx: array[0..4] of SizeInt;
 begin
   { VP8's probability is of a zero }
   p0 := (256 - prob) * 16;
   if p0 < 1 then p0 := 1 else if p0 > 4095 then p0 := 4095;
   mx.Add(Stretch(p0));
   idx[0] := h1 and t[0].mask; idx[1] := h2 and t[1].mask; idx[2] := h3 and t[2].mask;
-  for j := 0 to 2 do mx.Add(Stretch(t[j].P12(idx[j])));
+  idx[3] := h4 and t[3].mask; idx[4] := h5 and t[4].mask;
+  for j := 0 to 4 do mx.Add(Stretch(t[j].P12(idx[j])));
   mx.Add(256);
-  pm := mx.Mix(sel and 63);
-  pa := apm.Refine(pm, prob * 4 + (sel and 3));
-  Result := cd.Code(bit, (3 * pm + pa) div 4);
-  for j := 0 to 2 do t[j].Update(idx[j], Result);
+  pm := mx.Mix(sel and 255);
+  pa := apm.Refine(pm, prob * 4 + ((sel shr 2) and 3));
+  pb := apm2.Refine(pm, sel and 255);
+  Result := cd.Code(bit, (2 * pm + pa + pb) div 4);
+  for j := 0 to 4 do t[j].Update(idx[j], Result);
   mx.Update(Result);
   apm.Update(Result);
+  apm2.Update(Result);
 end;
 
 { ---------------- boolean coder ---------------- }
@@ -245,12 +251,12 @@ type
     nparts: Integer;
     fail: Boolean;
     decisions: Int64;
-    function BB(p, prob: Integer; h1, h2, h3: QWord; sel: Integer): Integer;
+    function BB(p, prob: Integer; h1, h2, h3: QWord; sel: Integer; h4: QWord = 0; h5: QWord = 0): Integer;
     function L(p, nbits, field: Integer): Integer;
     function RawByte(at: SizeInt; field: Integer): Integer;
   end;
 
-function TWalk.BB(p, prob: Integer; h1, h2, h3: QWord; sel: Integer): Integer;
+function TWalk.BB(p, prob: Integer; h1, h2, h3: QWord; sel: Integer; h4: QWord; h5: QWord): Integer;
 begin
   if fail then Exit(0);
   Inc(decisions);
@@ -260,10 +266,10 @@ begin
     MODE_ENC: begin
       Result := parts[p].dec.Get(prob);
       parts[p].enc.Put(Result, prob);
-      m.CodeBit(cd, Result, prob, h1, h2, h3, sel);
+      m.CodeBit(cd, Result, prob, h1, h2, h3, sel, h4, h5);
     end;
   else begin
-    Result := m.CodeBit(cd, 0, prob, h1, h2, h3, sel);
+    Result := m.CodeBit(cd, 0, prob, h1, h2, h3, sel, h4, h5);
     parts[p].enc.Put(Result, prob);
   end;
   end;
@@ -307,6 +313,9 @@ type
     topI4, topSkip: array of Byte;
     { coefficients, for the neighbours' contexts }
     cy, cu, cv, cy2: array of SmallInt;
+    baseQ: Integer;
+    segQ: array[0..3] of Integer; segAbs: Boolean; useSeg: Boolean;
+    curQ: Integer;                     { the current macroblock's quantizer }
   end;
 
 function Lim15(v: Integer): Integer; inline;
@@ -327,7 +336,7 @@ end;
   the frame's array; above, left: the neighbours' (-1: none). }
 function GetCoeffs(var w: TWalk; var f: TFrame; p, t, ctx, first: Integer;
                    var arr: array of SmallInt; at, above, left: SizeInt): Integer;
-var n, v, nzCount, prevMag, nb, sign, bit1, bit0, cat, k, z, node: Integer;
+var n, v, nzCount, prevMag, nb, sign, bit1, bit0, cat, k, z, node, nnz, qb, ma, ml: Integer;
     q: array[0..10] of Byte;
   function Neigh(pos: Integer): Integer;
   var a, l: Integer;
@@ -342,7 +351,9 @@ var n, v, nzCount, prevMag, nb, sign, bit1, bit0, cat, k, z, node: Integer;
       Hash(t * 16 + pos, nodeId * 4 + ctx),
       Hash(100 + t * 16 + pos, nodeId * 16 + nb),
       Hash(200 + t * 64 + nodeId, nzCount * 16 + prevMag * 2 + Ord(pos > 4)),
-      (Lim15(nodeId) * 4 + t) and 63);
+      ((Lim15(nodeId) * 4 + t) * 4 + nzCount) and 255,
+      Hash(300 + t * 16 + pos, nodeId * 256 + nnz * 16 + nzCount * 4 + qb),
+      Hash(600 + t * 16 + pos, nodeId * 4096 + ma * 512 + ml * 64 + ctx * 16 + qb * 4 + Ord(nzCount > 0)));
   end;
   procedure Load(band, c: Integer);
   var i: Integer;
@@ -352,16 +363,28 @@ var n, v, nzCount, prevMag, nb, sign, bit1, bit0, cat, k, z, node: Integer;
 begin
   FillChar(q, SizeOf(q), 0);
   nzCount := 0; prevMag := 0;
+  { the neighbours' non-zero coefficients, and the quantizer, in buckets }
+  nnz := 0;
+  if above >= 0 then for k := 0 to 15 do if arr[above + k] <> 0 then Inc(nnz);
+  if left >= 0 then for k := 0 to 15 do if arr[left + k] <> 0 then Inc(nnz);
+  if nnz > 7 then nnz := 4 + (nnz - 8) div 8;
+  if nnz > 7 then nnz := 7;
+  qb := f.curQ shr 5;
+  ma := 0; ml := 0;
   n := first;
   Load(BANDS[n], ctx);
   while n < 16 do begin
     nb := Neigh(ZIGZAG[n]);
+    if above >= 0 then ma := MagBucket(arr[above + ZIGZAG[n]]) else ma := 7;
+    if left >= 0 then ml := MagBucket(arr[left + ZIGZAG[n]]) else ml := 7;
     if Dc(q[0], 0, n) = 0 then Exit(n);           { end of block }
     while Dc(q[1], 1, n) = 0 do begin               { a zero }
       Inc(n);
       Load(BANDS[n], 0);
       if n = 16 then Exit(16);
       nb := Neigh(ZIGZAG[n]);
+      if above >= 0 then ma := MagBucket(arr[above + ZIGZAG[n]]) else ma := 7;
+      if left >= 0 then ml := MagBucket(arr[left + ZIGZAG[n]]) else ml := 7;
     end;
     { non-zero }
     if Dc(q[2], 2, n) = 0 then begin
@@ -514,11 +537,15 @@ begin
 
   { the frame header }
   w.L(0, 1, 1); w.L(0, 1, 2);                               { colour space, clamping }
-  if w.L(0, 1, 3) = 1 then begin                             { segments }
+  f.useSeg := w.L(0, 1, 3) = 1;
+  if f.useSeg then begin                                     { segments }
     f.updateMap := w.L(0, 1, 4) = 1;
     if w.L(0, 1, 5) = 1 then begin
-      w.L(0, 1, 6);
-      for i := 0 to 3 do if w.L(0, 1, 7) = 1 then begin w.L(0, 7, 8); w.L(0, 1, 9); end;
+      f.segAbs := w.L(0, 1, 6) = 1;
+      for i := 0 to 3 do if w.L(0, 1, 7) = 1 then begin
+        f.segQ[i] := w.L(0, 7, 8);
+        if w.L(0, 1, 9) = 1 then f.segQ[i] := -f.segQ[i];
+      end;
       for i := 0 to 3 do if w.L(0, 1, 10) = 1 then begin w.L(0, 6, 11); w.L(0, 1, 12); end;
     end;
     for i := 0 to 2 do f.segP[i] := 255;
@@ -556,7 +583,7 @@ begin
     if w.mode <> MODE_CHECK then w.parts[i].enc.Init;
   end;
   { quantizers }
-  w.L(0, 7, 27);
+  f.baseQ := w.L(0, 7, 27);
   for i := 0 to 4 do if w.L(0, 1, 28 + i) = 1 then begin w.L(0, 4, 33 + i); w.L(0, 1, 38); end;
   w.L(0, 1, 39);                                             { refresh entropy probs }
   { coefficient probabilities }
@@ -587,10 +614,15 @@ begin
       if w.fail then Exit;
       { segment }
       seg := 0;
+      f.curQ := f.baseQ;
       if f.updateMap then begin
         if w.BB(0, f.segP[0], Hash(6000, 0), Hash(6001, seg), 0, 59) = 0 then
           seg := w.BB(0, f.segP[1], Hash(6000, 1), Hash(6001, 1), 0, 59)
         else seg := 2 + w.BB(0, f.segP[2], Hash(6000, 2), Hash(6001, 2), 0, 59);
+      end;
+      if f.useSeg then begin
+        if f.segAbs then f.curQ := f.segQ[seg] else f.curQ := f.baseQ + f.segQ[seg];
+        if f.curQ < 0 then f.curQ := 0 else if f.curQ > 127 then f.curQ := 127;
       end;
       skip := False;
       if f.useSkip then

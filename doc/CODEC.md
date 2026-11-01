@@ -268,7 +268,15 @@ compression, never exactness.
 | PAIA 0.0.8 (and VP8) | 4,835,369 | **81.00%** |
 | xz -9e | 5,312,648 | 88.99% |
 
-Lossy frames come out 4 to 9% smaller (sample1.webp, a still: 9.1%). The
+Lossy frames come out 4 to 9% smaller (sample1.webp, a still: 9.1%).
+
+Then, on 7 WebPs with lossy frames (3.3 MB), measured one change at a
+time: the neighbours' non-zero counts, the magnitudes above and to the
+left apart rather than summed, and the macroblock's quantizer as contexts
+(-1.25%); a mixer chosen also by the non-zeros so far, and a second
+adaptive probability map (-0.3%); the mixer learning at a quarter of the
+rate (-0.6%). In all 2,466,668 -> 2,420,168 bytes (-1.9%). A slower rate
+still, or counters adapting more slowly or faster, did not help. The
 8 WebPs of the sample corpus, stills included: 86.96%, xz 93.89%.
 
 Not yet good:
