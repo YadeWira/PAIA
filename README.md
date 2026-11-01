@@ -1,5 +1,7 @@
 # PAIA
 
+[![CI](https://github.com/YadeWira/PAIA/actions/workflows/ci.yml/badge.svg)](https://github.com/YadeWira/PAIA/actions/workflows/ci.yml)
+
 **packAnimatedImage Algorithm**: lossless recompression of animated images,
 in FreePascal with C and embedded assembly; no libraries.
 
@@ -65,6 +67,10 @@ works](https://github.com/YadeWira/PAIA/wiki/How-it-works). The codec's
 full notes, with every measurement, are in [doc/CODEC.md](doc/CODEC.md).
 
 ## Building
+
+CI builds and tests every commit on Linux (x86-64, arm64, x86), macOS
+(Apple silicon) and Windows (x64, x86), and checks that the `.paia` files
+are the same bytes on all of them.
 
 FreePascal 3.2 and a C compiler (gcc or clang):
 
