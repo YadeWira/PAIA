@@ -1,0 +1,2 @@
+# .inc files are Pascal includes
+*.inc linguist-language=Pascal
