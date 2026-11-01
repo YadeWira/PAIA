@@ -7,3 +7,9 @@ its transparent differences, small sprites at an offset with each
 disposal),
 and the odd cases: a truncated GIF, a GIF inside other bytes, two GIFs one
 after the other, and a file that is not a GIF.
+
+`fli/`: FLI and FLC files written by `tools/mkflic.py` (no encoder of
+ours, nor ffmpeg nor ImageMagick, writes FLICs): every pixel chunk PAIA
+takes (BYTE_RUN, DELTA_FLI, DELTA_FLC with an odd width's last-byte word,
+COPY, BLACK), palettes, an unknown chunk, and a truncated file. ffmpeg
+decodes all of them.

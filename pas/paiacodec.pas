@@ -1,28 +1,37 @@
-{ The codec stream: a file with GIF images in it, as
-    - its bytes without the images' LZW data (headers, palettes,
-      extensions, descriptors, and anything that is not GIF), and
-    - for each image whose LZW comes back exactly: its pixels and what
-      rebuilds the LZW from them (paiagif.TLzwInfo),
+{ The codec stream: a file with GIF images or FLIC chunks in it, as
+    - its bytes without the images' LZW data and the chunks' data
+      (headers, palettes, extensions, and anything that is neither), and
+    - for each GIF image whose LZW comes back exactly: its pixels and what
+      rebuilds the LZW from them (paiagif.TLzwInfo);
+    - for each FLIC pixel chunk: its data, coded field by field (paiafli),
   all through one arithmetic coder.
 
-  STREAM (version 1; proof of concept: not frozen)
-    version   1 B    1
+  STREAM (version 2; proof of concept: not frozen)
+    version   1 B    2
     tables    2 B    log2 of the byte model's and the pixel model's tables
                      (12 to 22: from the sizes, so a small file clears little)
     coded     the rest:
       varint  raw length
-      varint  image count
+      varint  record count
       raw     the bytes
-      per image:
+      per record, in file order:
+        varint  kind: 0 a GIF image, 1 a FLIC chunk
         varint  where its data goes in the raw bytes, from the previous one
-        varint  mcs, width, pixel count
-        varint  flags: bit 0 starts with a clear, bit 1 ends with the end code
+      a GIF image:
+        varint  mcs, width, height, left, top, transparent + 1, disposal,
+                pixel count
+        varint  flags: bit 0 starts with a clear, bit 1 ends with the end
+                code, bit 2 a new GIF stream (then canvas width and height),
+                bit 3 interlaced
         varint  clearAt, padBits
         varint  exception count; per exception: k from the previous, code
         varint  trailing length, and the bytes
         varint  chunk; if 0: the sub-block count and every length
-        pixels  (TPixelModel), the previous frame being the last image of
-                the same width }
+        pixels  (TPixelModel), over the canvas the stream's images compose
+      a FLIC chunk:
+        varint  a new FLIC (then its width and height)
+        varint  chunk type, data length
+        data    (paiafli.CodeChunk) }
 unit paiacodec;
 
 {$I paia.inc}
@@ -35,10 +44,10 @@ unit paiacodec;
 
 interface
 
-uses SysUtils, paiaarith, paiamodel, paiagif;
+uses SysUtils, paiaarith, paiamodel, paiagif, paiafli;
 
 const
-  STREAM_VERSION = 1;
+  STREAM_VERSION = 2;
 
 type
   TCodecStats = record
@@ -46,6 +55,7 @@ type
     lzwBytes: SizeInt;      { the LZW data of the images taken }
     pixels: SizeInt;
     exceptions: SizeInt;
+    fliChunks: Integer;
   end;
 
 { The codec stream of d. }
@@ -66,8 +76,26 @@ type
     px: TBytes;
     n: SizeInt;
     info: TLzwInfo;
+    kind: Integer;          { 0: a GIF image; 1: a FLIC chunk }
+    fli: TFliChunk;
+    fdata: TBytes;          { a FLIC chunk's data }
   end;
   TTakenArray = array of TTaken;
+
+function StartOf(const t: TTaken): SizeInt;
+begin
+  if t.kind = 0 then Result := t.img.dataStart else Result := t.fli.dataStart;
+end;
+
+function EndOf(const t: TTaken): SizeInt;
+begin
+  if t.kind = 0 then Result := t.img.dataEnd else Result := t.fli.dataEnd;
+end;
+
+procedure SetStart(var t: TTaken; p: SizeInt);
+begin
+  if t.kind = 0 then t.img.dataStart := p else t.fli.dataStart := p;
+end;
 
 { The canvas of one GIF stream, as a viewer composes it image after image:
   what the pixel model sees under each pixel, and the previous image at
@@ -200,7 +228,7 @@ procedure CodeAll(cd: TCoder; var raw: TBytes; var tk: TTakenArray; var count: I
                   maxOut: SizeInt; byteBits, pixelBits: Integer);
 var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     flags: Integer; canvas: TCanvas; cv, pw: TWords; newStream: Boolean;
-    rawLen: SizeInt;
+    rawLen, flen: SizeInt; fm: TFliModel; fimg: TFliImage; fliStream, gifStream: Integer;
   { the value when encoding; when decoding, whatever was decoded }
   function V(x: Int64): QWord;
   begin
@@ -214,7 +242,7 @@ var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     Result := x;
   end;
 begin
-  canvas := nil;
+  canvas := nil; fm := nil; fimg := nil; fliStream := -1; gifStream := -1;
   bm := TByteModel.Create(byteBits);
   pm := TPixelModel.Create(pixelBits);
   try
@@ -225,8 +253,30 @@ begin
     last := 0;
     for i := 0 to count - 1 do
       with tk[i] do begin
-        pos := Bounded(V(Int64(img.dataStart) - Int64(last)), rawLen - last) + last;
-        img.dataStart := pos; last := pos;
+        kind := Bounded(V(kind), 1);
+        pos := Bounded(V(Int64(StartOf(tk[i])) - Int64(last)), rawLen - last) + last;
+        SetStart(tk[i], pos); last := pos;
+        if kind = 1 then begin
+          { a FLIC chunk }
+          newStream := (fimg = nil) or (cd.encoding and (fli.stream <> fliStream));
+          newStream := Bounded(V(Ord(newStream)), 1) <> 0;
+          if newStream then begin
+            fli.width := Bounded(V(fli.width), 65535);
+            fli.height := Bounded(V(fli.height), 65535);
+            if (fli.width < 1) or (fli.height < 1) or
+               (SizeInt(fli.width) * fli.height > MAX_PIXELS) then
+              raise Exception.Create('paiacodec: damaged stream');
+            fimg.Free;
+            fimg := TFliImage.Create(fli.width, fli.height);
+            fliStream := fli.stream;
+          end;
+          if fimg = nil then raise Exception.Create('paiacodec: damaged stream');
+          if fm = nil then fm := TFliModel.Create(pixelBits);
+          fli.ctype := Bounded(V(fli.ctype), 255);
+          flen := Bounded(V(Length(fdata)), maxOut);
+          CodeChunk(cd, fm, fimg, fli.ctype, fdata, flen);
+          Continue;
+        end;
         img.mcs := Bounded(V(img.mcs), 8);
         if img.mcs < 1 then raise Exception.Create('paiacodec: damaged stream');
         info.mcs := img.mcs;
@@ -237,7 +287,8 @@ begin
         img.transparent := Integer(Bounded(V(img.transparent + 1), 256)) - 1;
         img.disposal := Bounded(V(img.disposal), 7);
         n := Bounded(V(n), MAX_PIXELS);
-        newStream := (i = 0) or (cd.encoding and (img.stream <> tk[i - 1].img.stream));
+        newStream := (canvas = nil) or (cd.encoding and (img.stream <> gifStream));
+        gifStream := img.stream;
         flags := Ord(info.rules.initClear) + 2 * Ord(info.eoi) + 4 * Ord(newStream)
                + 8 * Ord(img.interlaced);
         flags := Bounded(V(flags), 15);
@@ -281,6 +332,8 @@ begin
         canvas.Paint(img, px, n);
       end;
   finally
+    fimg.Free;
+    fm.Free;
     canvas.Free;
     pm.Free;
     bm.Free;
@@ -288,8 +341,9 @@ begin
 end;
 
 function Compress(const d: TBytes; out stats: TCodecStats): TBytes;
-var imgs: TGifImages; tk: TTakenArray; raw, body: TBytes; i, count: Integer;
-    q, o: SizeInt; cd: TCoder; t: TTaken; pixels: QWord; byteBits, pixelBits: Integer;
+var imgs: TGifImages; flis: TFliChunks; tk, all: TTakenArray; raw, body: TBytes;
+    i, j, count: Integer; q, o: SizeInt; cd: TCoder; t: TTaken; pixels: QWord;
+    byteBits, pixelBits: Integer;
 begin
   stats := Default(TCodecStats);
   imgs := FindGifImages(d);
@@ -309,21 +363,42 @@ begin
   stats.imagesTaken := count;
   SetLength(tk, count);
 
+  { the FLIC chunks, and both kinds in file order, without overlaps }
+  flis := FindFliChunks(d);
+  stats.fliChunks := Length(flis);
+  all := nil; SetLength(all, count + Length(flis));
+  i := 0; j := 0; count := 0; q := 0;
+  while (i < Length(tk)) or (j < Length(flis)) do begin
+    if (j >= Length(flis)) or ((i < Length(tk)) and (tk[i].img.dataStart < flis[j].dataStart)) then begin
+      t := tk[i]; Inc(i);
+    end else begin
+      t := Default(TTaken);
+      t.kind := 1; t.fli := flis[j];
+      t.fdata := Copy(d, t.fli.dataStart, t.fli.dataEnd - t.fli.dataStart);
+      Inc(j);
+    end;
+    if StartOf(t) < q then Continue;
+    all[count] := t; Inc(count);
+    q := EndOf(t);
+  end;
+  SetLength(all, count);
+  tk := all;
+
   { the bytes without the images' data; each image's place in them }
   raw := nil; SetLength(raw, Length(d));
   q := 0; o := 0;
   for i := 0 to count - 1 do begin
-    Move(d[q], raw[o], tk[i].img.dataStart - q);
-    o := o + tk[i].img.dataStart - q;
-    q := tk[i].img.dataEnd;
-    tk[i].img.dataStart := o;
+    Move(d[q], raw[o], StartOf(tk[i]) - q);
+    o := o + StartOf(tk[i]) - q;
+    q := EndOf(tk[i]);
+    SetStart(tk[i], o);
   end;
   if Length(d) > q then Move(d[q], raw[o], Length(d) - q);
   o := o + Length(d) - q;
   SetLength(raw, o);
 
   pixels := 0;
-  for i := 0 to count - 1 do pixels := pixels + QWord(tk[i].n);
+  for i := 0 to count - 1 do pixels := pixels + QWord(tk[i].n) + QWord(Length(tk[i].fdata));
   byteBits := TableBitsFor(Length(raw) + 64 * QWord(count));
   pixelBits := TableBitsFor(pixels);
   cd := TCoder.CreateEncoder;
@@ -363,14 +438,15 @@ begin
   SetLength(Result, Length(raw));
   o := 0; q := 0; total := 0;
   for i := 0 to count - 1 do begin
-    data := Rebuild(tk[i].px, tk[i].n, tk[i].info);
+    if tk[i].kind = 0 then data := Rebuild(tk[i].px, tk[i].n, tk[i].info)
+    else data := tk[i].fdata;
     total := Length(Result) + Length(data);
     if total > maxOut then raise Exception.Create('paiacodec: output larger than declared');
     SetLength(Result, total);
-    Move(raw[q], Result[o], tk[i].img.dataStart - q);
-    o := o + tk[i].img.dataStart - q;
-    q := tk[i].img.dataStart;
-    Move(data[0], Result[o], Length(data));
+    Move(raw[q], Result[o], StartOf(tk[i]) - q);
+    o := o + StartOf(tk[i]) - q;
+    q := StartOf(tk[i]);
+    if Length(data) > 0 then Move(data[0], Result[o], Length(data));
     o := o + Length(data);
   end;
   if Length(raw) > q then Move(raw[q], Result[o], Length(raw) - q);

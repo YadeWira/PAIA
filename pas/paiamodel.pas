@@ -45,6 +45,7 @@ type
     t: array[1..3] of TCounters;    { orders 1 to 3, in slots }
     mx: TMixer;
     apm: TApm;
+    mm: array[0..1] of TMatchModel;    { per stream }
     c1, c2, c3: array[0..1] of Byte;   { per stream: S_RAW, S_AUX }
   public
     { tableBits: log2 of the counters of each order-1..3 table }
@@ -150,19 +151,22 @@ begin
   inherited Create;
   t0.Init(10, 60);
   for i := 1 to 3 do t[i].Init(tableBits, 60);
-  mx.Init(5, 2 * 256, 6);
+  mx.Init(6, 2 * 256 * 2, 6);
+  mm[0].Init(tableBits - 2);
+  mm[1].Init(16);
   apm.Init(2 * 256 * 256, 7);       { streams 0 and 1 }
   FillChar(c1, SizeOf(c1), 0); FillChar(c2, SizeOf(c2), 0); FillChar(c3, SizeOf(c3), 0);
 end;
 
 function TByteModel.Code(cd: TCoder; b: Integer; stream: Integer): Integer;
-var node, sub, bit, i, j, p, pm, pa: Integer; base: array[1..3] of QWord;
+var node, sub, bit, i, j, p, pm, pa, e: Integer; base: array[1..3] of QWord;
     slot: array[1..3] of SizeInt; i0: SizeInt;
 begin
   base[1] := Hash(QWord(stream) * 256 + c1[stream], 1);
   base[2] := Hash(QWord(stream) * 65536 + QWord(c1[stream]) * 256 + c2[stream], 2);
   base[3] := Hash(Hash(QWord(c1[stream]) * 65536 + QWord(c2[stream]) * 256 + c3[stream], 3), stream);
   slot[1] := 0; slot[2] := 0; slot[3] := 0;
+  e := mm[stream].Expected(0);
   node := 1; sub := 1;
   for i := 7 downto 0 do begin
     if (i = 7) or (i = 3) then begin
@@ -173,8 +177,9 @@ begin
     i0 := (stream * 256 + node) and t0.mask;
     mx.Add(Stretch(t0.P12(i0)));
     for j := 1 to 3 do mx.Add(Stretch(t[j].P12(slot[j] + sub)));
+    mx.Add(mm[stream].Input(e, 8, node, i));
     mx.Add(256);
-    pm := mx.Mix(stream * 256 + node);
+    pm := mx.Mix((stream * 256 + node) * 2 + Ord(mm[stream].len >= 16));
     pa := apm.Refine(pm, (SizeInt(stream) * 256 + c1[stream]) * 256 + node);
     p := (pm + 3 * pa) div 4;
     bit := cd.Code((b shr i) and 1, p);
@@ -182,10 +187,12 @@ begin
     for j := 1 to 3 do t[j].Update(slot[j] + sub, bit);
     mx.Update(bit);
     apm.Update(bit);
+    mm[stream].Learn(bit);
     node := node * 2 + bit;
     sub := sub * 2 + bit;
   end;
   Result := node and 255;
+  mm[stream].Update(Result);
   c3[stream] := c2[stream]; c2[stream] := c1[stream]; c1[stream] := Result;
 end;
 

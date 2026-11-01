@@ -96,6 +96,30 @@ type
     procedure Update(bit: Integer);
   end;
 
+type
+  { A match model (as lpaq's): the longest earlier occurrence of the last
+    MINLEN bytes coded predicts the bytes that follow it. The caller turns
+    the expected byte into a prediction per bit (Input / Learn). }
+  TMatchModel = record
+    hist: TBytes;
+    n: SizeInt;
+    ht: array of LongInt;
+    hmask: SizeInt;
+    ptr: SizeInt;              { where the expected byte is, if len > 0 }
+    len: Integer;
+    sm: TCounters;             { by length and expected bit }
+    cur: SizeInt;
+    procedure Init(hashBits: Integer);
+    { the byte expected k bytes ahead, or -1 }
+    function Expected(k: Integer): Integer; inline;
+    { the stretched prediction for the next bit, given the expected value
+      `e` (-1: none) of `bits` bits, the bits so far `node` (with its
+      leading 1) and the bit's place b }
+    function Input(e, bits, node, b: Integer): Integer;
+    procedure Learn(bit: Integer); inline;
+    procedure Update(c: Byte);
+  end;
+
 { The tables, also handed to the C model (paiapix.c) so that both use the
   very same numbers. }
 var
@@ -331,6 +355,59 @@ begin
   g := (bit shl 16) + (bit shl rate) - bit - bit;
   v := t[idx] + apmBase[bucket];
   t[idx] := t[idx] + SarLongint(g - v, rate);
+end;
+
+{ ---------------- match model ---------------- }
+
+const MINLEN = 5;
+
+procedure TMatchModel.Init(hashBits: Integer);
+begin
+  hist := nil; SetLength(hist, 1 shl 16); n := 0;
+  ht := nil; SetLength(ht, SizeInt(1) shl hashBits);
+  hmask := (SizeInt(1) shl hashBits) - 1;
+  ptr := 0; len := 0;
+  sm.Init(7, 1023);
+  cur := 0;
+end;
+
+function TMatchModel.Expected(k: Integer): Integer; inline;
+begin
+  if (len > 0) and (ptr + k < n) then Result := hist[ptr + k] else Result := -1;
+end;
+
+function TMatchModel.Input(e, bits, node, b: Integer): Integer;
+var l: Integer;
+begin
+  if (e >= 0) and (((e or (1 shl bits)) shr (b + 1)) = node) then begin
+    l := len; if l > 31 then l := 31;
+    cur := 2 + l * 2 + ((e shr b) and 1);
+  end else cur := 0;
+  Result := Stretch(sm.P12(cur));
+end;
+
+procedure TMatchModel.Learn(bit: Integer); inline;
+begin
+  sm.Update(cur, bit);
+end;
+
+procedure TMatchModel.Update(c: Byte);
+var h: QWord; i: Integer;
+begin
+  if n >= Length(hist) then SetLength(hist, Length(hist) * 2);
+  hist[n] := c; Inc(n);
+  if (len > 0) and (hist[ptr] = c) then begin
+    Inc(ptr); if len < 65535 then Inc(len);
+  end else len := 0;
+  if n >= MINLEN then begin
+    h := 0;
+    for i := 1 to MINLEN do h := ((h * 773) + hist[n - i] + 1) and $FFFFFFFF;
+    h := (h * QWord($9E3779B1)) and $FFFFFFFF;
+    h := h shr 8;
+    if len = 0 then
+      if ht[h and hmask] > 0 then begin ptr := ht[h and hmask]; len := 1; end;
+    ht[h and hmask] := n;
+  end;
 end;
 
 initialization

@@ -59,7 +59,7 @@ other...), and only images whose sub-blocks are complete.
   pixel = left, up = up-right; then two adaptive probability maps (on left
   and on up). "The previous frame's pixel" is the canvas under it.
 - **Everything else** (headers, palettes, extensions, the side
-  information): orders 0 to 3, mixed.
+  information): orders 0 to 3 and a match model, mixed.
 
 The counters of a context sit in slots of 16 (a 64-byte cache line), one
 for the high bits of a pixel and one for the low four (as lpaq does); the
@@ -87,7 +87,8 @@ compared, all 62 coming back the same:
 |---|---|---|
 | PAIA 0.0.1, first version | 12,155,500 | 46.82% |
 | PAIA 0.0.2 (the candidate flag) | 11,855,109 | 45.67% |
-| PAIA 0.0.3 (the canvas) | 11,636,648 | **44.82%** |
+| PAIA 0.0.3 (the canvas) | 11,636,648 | 44.82% |
+| PAIA 0.0.4 (a match model for the plain bytes) | 11,628,335 | **44.79%** |
 
 The canvas matters most for optimized animations (frames as small
 rectangles at an offset, with transparency): earthmorph3.gif 58.1% ->
@@ -118,6 +119,40 @@ extracting:
 
 That is 2.6 million pixels a second extracting, 1.0 compressing; 3x and
 3.8x faster than the first version. The Pascal-only build: 29.7 s and 12.6 s.
+
+## FLI and FLC (`pas/paiafli.pas`)
+
+Autodesk Animator's FLICs (8 bits a pixel) keep their frames as chunks of
+simple codes: BYTE_RUN (a whole frame, run-length coded), DELTA_FLI (byte
+runs against the previous frame), DELTA_FLC (the same in 16-bit words),
+COPY and BLACK. These are not decoded and rebuilt as GIF's LZW is: each
+chunk's bytes are coded **in their own order, field by field**, the coder
+knowing at every byte what it is:
+
+- a field of the structure (a line's packet count, a skip, a run length,
+  a line count, SS2's opcodes) goes to a token model: its kind, and the
+  same kind's last value or the room left on the line, as contexts;
+- a pixel goes to a pixel model that sees the image as the chunks build
+  it: its neighbours there, and what was at its place (and right of it,
+  below it) before this chunk changed it;
+- both also have a match model: an animation that loops, or repeats a
+  stretch, finds it again however far back it is.
+
+So any chunk comes back exactly, whatever its encoder did (a wrong packet
+count in a BYTE_RUN line, padding, runs past the edge): there is nothing to
+predict about the encoder and nothing to check but the whole file. A
+BYTE_RUN line's packet count, which decoders ignore, is coded after the
+line's packets, knowing how many there were. Palettes, stamps, prefix
+chunks, 16-bit FLICs and unknown chunks stay with the plain bytes.
+
+| 29 FLICs of the sample corpus (18.1 MB) | total | |
+|---|---|---|
+| PAIA 0.0.4 | 5,860,651 | **32.43%** |
+| xz -9e | 8,394,672 | 46.45% |
+
+Each came back the same (and the 22 files named `.fli`/`.flc` there that
+are not FLICs: 88.35%, xz 87.23%). The model is Pascal only for now: a
+2.8 MB FLIC (306 frames of 160x100) takes 8 s to compress and verify.
 
 Not yet good:
 - **Files that are not GIF** (or the non-GIF part of one): orders 0-3 lose

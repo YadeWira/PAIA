@@ -3,7 +3,7 @@
 **packAnimatedImage Algorithm**: lossless recompression of animated images,
 in FreePascal with C and embedded assembly; no libraries.
 
-> **Status: proof of concept.** GIF works; nothing to download yet. The
+> **Status: proof of concept.** GIF and FLI/FLC work; nothing to download yet. The
 > format is not frozen: no file written by an early build is promised to
 > open later.
 
@@ -13,8 +13,9 @@ paia x anim.paia         # -> anim.gif, the same file byte for byte
 paia t anim.paia         # extract in memory and check
 ```
 
-On the 62 GIF files of the sample corpus: **44.82%** of their size, against
-95.60% for xz -9e and 7-Zip, every file coming back the same
+On the 62 GIF files of the sample corpus: **44.79%** of their size, against
+95.60% for xz -9e and 7-Zip; on its 29 FLI/FLC animations, **32.43%**
+against 46.45%; every file coming back the same
 ([doc/CODEC.md](doc/CODEC.md)).
 
 PAIA belongs to a family of recompressors that share one rule: the original
@@ -36,17 +37,17 @@ scratch.
 
 The animated formats PAIA aims to take ([doc/FORMATS.md](doc/FORMATS.md)):
 
-| Format | Extension | Coding |
-|---|---|---|
-| GIF | `.gif` | LZW, palette of up to 256 colours |
-| Animated WebP | `.webp` | VP8 / VP8L in RIFF |
-| Animated AVIF | `.avif`, `.avifs` | AV1 in ISOBMFF |
-| HEIF image sequence | `.heics`, `.heic` | HEVC in ISOBMFF |
-| BPG | `.bpg` | HEVC |
-| FLI / FLC | `.fli`, `.flc` | RLE and frame deltas, palette |
-| ANI | `.ani` | ICO/CUR frames in RIFF |
-| FLIF | `.flif` | MANIAC |
-| IFF ANIM | `.anim`, `.iff` | ByteRun and frame deltas |
+| Format | Extension | Coding | PAIA |
+|---|---|---|---|
+| GIF | `.gif` | LZW, palette of up to 256 colours | works |
+| Animated WebP | `.webp` | VP8 / VP8L in RIFF | |
+| Animated AVIF | `.avif`, `.avifs` | AV1 in ISOBMFF | |
+| HEIF image sequence | `.heics`, `.heic` | HEVC in ISOBMFF | |
+| BPG | `.bpg` | HEVC | |
+| FLI / FLC | `.fli`, `.flc` | RLE and frame deltas, palette | works (8 bits) |
+| ANI | `.ani` | ICO/CUR frames in RIFF | |
+| FLIF | `.flif` | MANIAC | |
+| IFF ANIM | `.anim`, `.iff` | ByteRun and frame deltas | |
 
 APNG, MNG and JNG belong to PPA; JPEG XL is left aside.
 
