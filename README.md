@@ -21,17 +21,19 @@ against 46.45%; on its 26 ANI cursors, **8.98%** against 14.69%; on its 14 IFF A
 every file coming back the same
 ([doc/CODEC.md](doc/CODEC.md)).
 
-PAIA belongs to a family of recompressors that share one rule: the original
-comes back **byte for byte**, and nothing is written unless it verified.
-Compressing decompresses the result and compares it with the input before
-writing; anything that would not come back exactly is stored as it is.
+PAIA belongs to a family of recompressors that share that rule: the
+original comes back byte for byte, and nothing is written unless it
+verified. Compressing decompresses the result and compares it with the
+input before writing; anything that would not come back exactly is
+stored as it is.
 
-| Sibling | Formats |
-|---|---|
-| [PMPA](https://github.com/YadeWira/PMPA) | MPEG audio (MP1, MP2, MP3) |
-| [PRA](https://github.com/YadeWira/PRA) | raster images (PNM, BMP, TGA, PCX, ...) |
-| [PPA](https://github.com/YadeWira/PPA) | the PNG family (PNG, APNG, MNG, JNG) |
-| [PJA](https://github.com/YadeWira/PJA) | JPEG and JPEG-LS |
+| Sibling | Formats | Successor of |
+|---|---|---|
+| [PMPA](https://github.com/YadeWira/PMPA) | MPEG audio (MP1, MP2, MP3) | [packMP3](https://github.com/YadeWira/packMP3), [packMP2](https://github.com/YadeWira/packMP2) |
+| [PRA](https://github.com/YadeWira/PRA) | raster images (PNM, BMP, HDR, TGA, PCX, ...) | packPNM |
+| [PPA](https://github.com/YadeWira/PPA) | the PNG family (PNG, APNG, MNG, JNG) | [packPNG](https://github.com/YadeWira/packPNG) |
+| **PAIA** | animated images (GIF, WebP, FLI/FLC, ANI, ...) | (new) |
+| [PJA](https://github.com/YadeWira/PJA) | JPEG and JPEG-LS | [packJPG](https://github.com/YadeWira/packJPG) |
 
 Unlike its siblings, PAIA has no predecessor to succeed: it starts from
 scratch.
