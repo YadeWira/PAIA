@@ -155,20 +155,23 @@ static inline void apm_update(const TPixState *s, const Apm *a, const ApmPos *po
 
 typedef struct { int32_t run, cntT, cntV, pad; } TRun;
 
+/* x0, y0: where px[i0] is (the caller divides: no 64-bit division here,
+   which 32-bit targets would take from a runtime library) */
 void paia_code_pixels(TPixState *s, TCState *cd, uint8_t *px, int64_t i0, int64_t i1,
                       int64_t n, int64_t width, int32_t bits, const uint16_t *cv,
-                      const uint16_t *pw, int32_t transp, TRun *r) {
+                      const uint16_t *pw, int32_t transp, TRun *r, int64_t x0, int64_t y0) {
   int64_t i, w = width, slot[PIXEL_CONTEXTS], fidx[FLAG_CONTEXTS];
   uint64_t base[PIXEL_CONTEXTS];
   int32_t xin[PIXEL_CONTEXTS + 1], fin[FLAG_CONTEXTS + 1];
   int run = r->run, cntT = r->cntT, cntV = r->cntV;
   int j;
   for (j = 0; j < PIXEL_CONTEXTS; j++) slot[j] = 0;
+  int64_t x = x0 - 1, y = y0;
   for (i = i0; i < i1; i++) {
-    int64_t x = i % w, y = i / w;
     int L, U, UL, UR, LL, UU, PV, PR, PD, PW, cand, pat, v, node, sub, bit, b, pm, pa, pr12, sel;
     int32_t *wsel;
     ApmPos ap1, ap2;
+    if (++x == w) { x = 0; y++; }
     L = x > 0 ? px[i - 1] : NONE;
     LL = x > 1 ? px[i - 2] : NONE;
     if (y > 0) {

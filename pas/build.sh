@@ -6,9 +6,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE"
 mkdir -p build/checked build/fast build/pure
 rm -f build/paia build/paia-checked build/paia-pure
-# the C model (the release build only); no libc, so the same .o can go into
-# a library later
-${CC:-gcc} -O3 -fno-builtin -fno-stack-protector -fPIC -c paiapix.c -o build/fast/paiapix.o
+# the C model (the release build only): no library, no runtime
+sh ./build_c.sh build/fast
 # warnings are shown: an uninitialized variable once made the two sides of
 # the codec disagree
 fpc -O2 -vw -FUbuild/checked paiacli.pas -obuild/paia-checked | grep -E 'Warning|Error' || true

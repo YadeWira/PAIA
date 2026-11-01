@@ -1,0 +1,159 @@
+# Every platform builds the paia command three ways (with the C pixel
+# model, without it, and with range and overflow checks), compresses every
+# sample of the repository with the three (the same .paia from each),
+# extracts and compares, and records the SHA-256 of the .paia files
+# (.github/test.sh); the last job checks that they are the same bytes
+# everywhere. Linux x86-64 also runs the full suite (run_tests.sh: damaged
+# files too). The same platforms as PJA's.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Free Pascal and clang
+        run: sudo apt-get update && sudo apt-get install -y fpc clang
+      - name: Test
+        env:
+          CC: clang
+        run: sh .github/test.sh
+      - name: The full suite
+        run: ./run_tests.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-linux-x64
+          path: hash.txt
+
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Free Pascal and clang
+        run: sudo apt-get update && sudo apt-get install -y fpc clang
+      - name: Test
+        env:
+          CC: clang
+        run: sh .github/test.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-linux-arm64
+          path: hash.txt
+
+  linux-x86:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the 32-bit C library
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y libc6:i386 gcc-multilib clang
+      - name: Install the 32-bit Free Pascal
+        run: scripts/fpc-i386.sh /tmp/fpc-i386
+      - name: Test
+        env:
+          FPC: /tmp/fpc-i386/fpc
+          CC: clang -m32
+        run: sh .github/test.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-linux-x86
+          path: hash.txt
+
+  macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Free Pascal
+        run: brew install fpc
+      - name: Test
+        run: sh .github/test.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-macos-arm64
+          path: hash.txt
+
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Free Pascal (win32 and win64)
+        shell: pwsh
+        run: |
+          $url = 'https://sourceforge.net/projects/freepascal/files/Win32/3.2.2/fpc-3.2.2.win32.and.win64.exe/download'
+          curl.exe -L --fail --retry 3 -o "$env:TEMP\fpc-setup.exe" $url
+          Start-Process -Wait -FilePath "$env:TEMP\fpc-setup.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-'
+          $fpc = Get-ChildItem C:\FPC -Recurse -Filter fpc.exe | Select-Object -First 1
+          if (-not $fpc) { throw 'fpc.exe not found after the installer' }
+          Split-Path $fpc.FullName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
+      - name: Install the C compiler (MSYS2's MinGW-w64 clang)
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-x86_64-clang
+      - name: Test
+        shell: bash
+        env:
+          FPC: fpc -Px86_64
+          CC: /c/msys64/mingw64/bin/clang
+        run: sh .github/test.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-windows-x64
+          path: hash.txt
+
+  windows-x86:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Free Pascal (win32 and win64)
+        shell: pwsh
+        run: |
+          $url = 'https://sourceforge.net/projects/freepascal/files/Win32/3.2.2/fpc-3.2.2.win32.and.win64.exe/download'
+          curl.exe -L --fail --retry 3 -o "$env:TEMP\fpc-setup.exe" $url
+          Start-Process -Wait -FilePath "$env:TEMP\fpc-setup.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-'
+          $fpc = Get-ChildItem C:\FPC -Recurse -Filter fpc.exe | Select-Object -First 1
+          if (-not $fpc) { throw 'fpc.exe not found after the installer' }
+          Split-Path $fpc.FullName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
+      - name: Install the C compiler (MSYS2's MinGW-w64 gcc)
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-i686-gcc
+      - name: Test
+        shell: bash
+        env:
+          FPC: fpc -Pi386
+          CC: /c/msys64/mingw32/bin/gcc
+        run: sh .github/test.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-windows-x86
+          path: hash.txt
+
+  determinism:
+    needs: [linux-x64, linux-arm64, linux-x86, macos-arm64, windows-x64, windows-x86]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hash-*
+      - name: Compare the .paia files' hashes
+        run: |
+          for f in hash-*/*; do echo "$f: $(cat "$f")"; done
+          n=$(cat hash-*/* | sort -u | wc -l)
+          if [ "$n" -ne 1 ]; then
+            echo "the .paia files differ between platforms" >&2
+            exit 1
+          fi
+          echo "the same .paia files on every platform"

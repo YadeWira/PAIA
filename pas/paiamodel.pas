@@ -119,9 +119,12 @@ type
   { what has to survive from one batch to the next }
   TCRun = record run, cntT, cntV, pad: LongInt; end;
 
+{ external with no name: FreePascal gives it the platform's C name (a
+  leading underscore on 32-bit Windows and on macOS) }
 procedure paia_code_pixels(s: Pointer; cd: Pointer; px: PByte; i0, i1, n, width: Int64;
-                           bits: LongInt; cv, pw: PWord; transp: LongInt; r: Pointer);
-  cdecl; external name 'paia_code_pixels';
+                           bits: LongInt; cv, pw: PWord; transp: LongInt; r: Pointer;
+                           x0, y0: Int64);
+  cdecl; external;
 {$endif}
 
 function UsingC: Boolean;
@@ -265,7 +268,8 @@ begin
       cs.x1 := cd.dec.x1; cs.x2 := cd.dec.x2; cs.x := cd.dec.x;
       cs.buf := @cd.dec.d[0]; cs.p := cd.dec.p; cs.last := cd.dec.last;
     end;
-    paia_code_pixels(@st, @cs, @px[0], i0, i1, n, width, bits, pcv, ppw, transp, @r);
+    paia_code_pixels(@st, @cs, @px[0], i0, i1, n, width, bits, pcv, ppw, transp, @r,
+                     i0 mod width, i0 div width);
     if cd.encoding then begin
       cd.enc.x1 := cs.x1; cd.enc.x2 := cs.x2; cd.enc.n := cs.n;
     end else begin
