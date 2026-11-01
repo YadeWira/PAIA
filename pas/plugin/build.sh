@@ -9,8 +9,11 @@
 # zpaq-std looks for codecs/paia.so (or codecs\paia.dll) next to its binary.
 set -euo pipefail
 FPC=${FPC:-fpc}
-PAS=$(cd "$(dirname "$0")/.." && pwd); OUT=${1:?usage: build.sh <out dir>}
-mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); B=$OUT/build
+# absolute paths as the compiler takes them: on Windows (MSYS2, Git bash)
+# pwd gives /d/a/..., which a Windows FreePascal does not read; pwd -W gives D:/a/...
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) PWD_=(pwd -W) ;; *) PWD_=(pwd) ;; esac
+PAS=$(cd "$(dirname "$0")/.." && "${PWD_[@]}"); OUT=${1:?usage: build.sh <out dir>}
+mkdir -p "$OUT"; OUT=$(cd "$OUT" && "${PWD_[@]}"); B=$OUT/build
 rm -rf "$B"; mkdir -p "$B/u" "$B/c"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) LIB=paia.dll; PIC=; CPIC= ;;
