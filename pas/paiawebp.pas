@@ -47,6 +47,9 @@ type
     dataStart, dataEnd: SizeInt;
     sub: Integer;                    { WK_* }
     width, height: Integer;          { for WK_ALPH }
+    { a frame of an animation: where it goes on the canvas }
+    inFrame, blend, dispose: Boolean;
+    cw, ch, fx, fy, fw, fh: Integer;
   end;
   TWebpStreams = array of TWebpStream;
 
@@ -65,6 +68,10 @@ type
     bm: TBitsModel;
     pm: TDibModel;
     prev: array[0..1] of record w, h: Integer; px: array of LongWord; end;
+    { the animation's canvas, in colours (ARGB), as the frames compose it }
+    canvas: array of LongWord;
+    cw, ch: Integer;
+    disposeRect: Boolean; dx, dy, dw, dh: Integer;
     constructor Create(tableBits: Integer);
     destructor Destroy; override;
   end;
@@ -301,6 +308,14 @@ type
     io: TBitIO;
     fail: Boolean;
     prevPx: TImage; prevW, prevH: Integer;   { the previous frame's main image }
+    predImg: TImage; predBits, predW: Integer;  { the predictor transform's modes }
+    { the colour indexing transform: the palette, and its index lookup }
+    palette: TImage; palBits: Integer;
+    palKey: array of LongWord; palIdx: array of SmallInt;
+    { the frame on the canvas }
+    useCanvas: Boolean; cs: TWebpStream;
+    function PalLookup(c: LongWord): Integer;
+    procedure SetPalette(const sub: TImage; bits: Integer);
     function Field(n, kind, c1: Integer): Integer;
     function Sym(var h: THuff; kind, c1, c2: Integer): Integer;
     { a literal channel byte: through the pixel model }
@@ -310,6 +325,41 @@ type
     function ReadCode(var h: THuff; alphabet, kind: Integer): Boolean;
     function DecodeImage(w, h: Integer; level0: Boolean; chanBase: Integer; out px: TImage): Boolean;
   end;
+
+procedure TWalk.SetPalette(const sub: TImage; bits: Integer);
+var i: Integer; h: LongWord; c: LongWord;
+begin
+  palBits := bits;
+  palette := nil; SetLength(palette, Length(sub));
+  for i := 0 to High(sub) do begin
+    if i = 0 then palette[i] := sub[i]
+    else
+      { each entry is the difference from the one before, channel by channel }
+      palette[i] := (((sub[i] and $FF00FF00) + (palette[i - 1] and $FF00FF00)) and $FF00FF00) or
+                    (((sub[i] and $00FF00FF) + (palette[i - 1] and $00FF00FF)) and $00FF00FF);
+  end;
+  palKey := nil; palIdx := nil;
+  SetLength(palKey, 1024); SetLength(palIdx, 1024);
+  for i := 0 to 1023 do palIdx[i] := -1;
+  for i := 0 to High(palette) do begin
+    c := palette[i];
+    h := ((QWord(c) * $9E3779B1) and $FFFFFFFF) shr 22;
+    while (palIdx[h] >= 0) and (palKey[h] <> c) do h := (h + 1) and 1023;
+    if palIdx[h] < 0 then begin palKey[h] := c; palIdx[h] := i; end;
+  end;
+end;
+
+function TWalk.PalLookup(c: LongWord): Integer;
+var h: LongWord;
+begin
+  if palIdx = nil then Exit(-1);
+  h := ((QWord(c) * $9E3779B1) and $FFFFFFFF) shr 22;
+  while palIdx[h] >= 0 do begin
+    if palKey[h] = c then Exit(palIdx[h]);
+    h := (h + 1) and 1023;
+  end;
+  Result := -1;
+end;
 
 function TWalk.Field(n, kind, c1: Integer): Integer;
 begin
@@ -487,7 +537,24 @@ var cacheBits, metaBits, mw, ngroups, g, i, k, x, y, s, t, lastType, lp, dp, len
     extra, alphabet: Integer;
     total, pos, j: SizeInt; meta: TImage; codes: array of array[0..4] of THuff;
     cache: array of LongWord; argb: LongWord; c: array[0..8] of Integer;
-    usePrev: Boolean; lastLp, lastDp: Integer;
+    usePrev: Boolean; lastLp, lastDp, pmode, canvasPred, transpPacked, ti, tctx: Integer;
+  function CanvasIndex(px0, py0: Integer): Integer;
+  var per, bpp, k2, ux, cx, cy, idx: Integer;
+  begin
+    per := 1 shl palBits; bpp := 8 shr palBits;
+    Result := 0;
+    cy := cs.fy + py0;
+    for k2 := 0 to per - 1 do begin
+      ux := px0 * per + k2;
+      if ux >= cs.fw then Break;
+      cx := cs.fx + ux;
+      if (cx >= st.cw) or (cy >= st.ch) then Exit(-1);
+      idx := PalLookup(st.canvas[SizeInt(cy) * st.cw + cx]);
+      if idx < 0 then Exit(-1);
+      Result := Result or (idx shl (k2 * bpp));
+    end;
+    Result := Result and 255;
+  end;
   function Ch(p: SizeInt; chn: Integer): Integer; inline;
   begin
     Result := (px[p] shr (8 * chn)) and 255;
@@ -527,9 +594,29 @@ begin
   cache := nil;
   if cacheBits > 0 then SetLength(cache, 1 shl cacheBits);
   usePrev := level0 and (prevPx <> nil) and (prevW = w) and (prevH = h);
+  pmode := 0;
+  { the palette's first fully transparent entry, packed as a pixel would be }
+  transpPacked := NONE;
+  if level0 and (palette <> nil) then
+    for ti := 0 to High(palette) do
+      if (palette[ti] shr 24) = 0 then begin
+        transpPacked := 0;
+        for k := 0 to (1 shl palBits) - 1 do
+          transpPacked := transpPacked or (ti shl (k * (8 shr palBits)));
+        transpPacked := transpPacked and 255;
+        Break;
+      end;
   pos := 0; x := 0; y := 0; lastType := 0; lastLp := 0; lastDp := 0; argb := 0;
   while (pos < total) and not fail do begin
     if metaBits > 0 then g := meta[SizeInt(y shr metaBits) * mw + (x shr metaBits)] else g := 0;
+    { what the canvas shows under this pixel, as this frame's palette
+      indices packed as the pixel packs them }
+    canvasPred := -1;
+    if level0 and useCanvas and (palette <> nil) then canvasPred := CanvasIndex(x, y);
+    if canvasPred < 0 then tctx := 0
+    else if canvasPred = transpPacked then tctx := 1
+    else if (x > 0) and (canvasPred = Integer((px[pos - 1] shr 8) and 255)) then tctx := 2
+    else tctx := 3;
     { the green symbol: a literal, a copy's length prefix, or a cache index;
       coded as its type first, then the value }
     if mode <> MODE_DEC then begin
@@ -539,8 +626,8 @@ begin
       { the type: a symbol of its own, unless the code allows only one }
     end else begin s := 0; t := 0; end;
     if codes[g][0].single < 0 then begin
-      if mode = MODE_ENC then st.bm.Code(cd, t, 2, K_TYPE + 64 * Ord(level0), lastType, 0)
-      else if mode = MODE_DEC then t := st.bm.Code(cd, 0, 2, K_TYPE + 64 * Ord(level0), lastType, 0);
+      if mode = MODE_ENC then st.bm.Code(cd, t, 2, K_TYPE + 64 * Ord(level0), lastType, tctx)
+      else if mode = MODE_DEC then t := st.bm.Code(cd, 0, 2, K_TYPE + 64 * Ord(level0), lastType, tctx);
     end else if mode = MODE_DEC then begin
       s := codes[g][0].single;
       if s < 256 then t := 0 else if s < 280 then t := 1 else t := 2;
@@ -550,22 +637,33 @@ begin
     for k := 1 to 8 do c[k] := NONE;
     case t of
       0: begin
+        { the predictor's mode where this pixel is (main image only) }
+        if level0 and (predImg <> nil) then begin
+          j := SizeInt(y shr predBits) * predW + (x shr predBits);
+          if j < Length(predImg) then pmode := 1 + ((predImg[j] shr 8) and 15) else pmode := 0;
+        end;
         { green, red, blue, alpha; each with its neighbours in this image }
         for k := 0 to 3 do begin
           i := CHAN_BYTE[k];                      { the channel's byte in ARGB }
-          c[0] := chanBase + k;
+          c[0] := chanBase + k + 8 * pmode;
           if x > 0 then c[1] := Ch(pos - 1, i) else c[1] := NONE;
           if y > 0 then begin
             c[2] := Ch(pos - w, i);
             if x > 0 then c[3] := Ch(pos - w - 1, i) else c[3] := NONE;
             if x + 1 < w then c[4] := Ch(pos - w + 1, i) else c[4] := NONE;
           end else begin c[2] := NONE; c[3] := NONE; c[4] := NONE; end;
-          if usePrev then c[5] := (prevPx[pos] shr (8 * i)) and 255 else c[5] := NONE;
+          if usePrev then c[5] := (prevPx[pos] shr (8 * i)) and 255
+          else if (k = 0) and (canvasPred >= 0) then c[5] := canvasPred
+          else c[5] := NONE;
           if (c[1] <> NONE) and (c[2] <> NONE) and (c[3] <> NONE) then c[6] := Clip(c[1] + c[2] - c[3])
           else if c[1] <> NONE then c[6] := c[1] else c[6] := c[2];
           if k > 0 then begin
             c[7] := (argb shr 8) and 255;          { this pixel's green }
             if x > 0 then c[8] := Clip(Ch(pos - 1, i) - Ch(pos - 1, 1) + 128) else c[8] := NONE;
+          end else if canvasPred >= 0 then begin
+            { the canvas's index, with the transparent one: a frame drawn
+              over the one before leaves unchanged pixels transparent }
+            c[7] := transpPacked; c[8] := canvasPred;
           end else begin c[7] := NONE; c[8] := NONE; end;
           if k = 0 then begin
             if mode = MODE_DEC then begin
@@ -663,6 +761,9 @@ begin
       0, 1: begin
         bits := wk.Field(3, K_TRANS, 17 + t) + 2;
         if not wk.DecodeImage(DivRound(xs, 1 shl bits), DivRound(h, 1 shl bits), False, 4, sub) then Exit;
+        if t = 0 then begin
+          wk.predImg := sub; wk.predBits := bits; wk.predW := DivRound(xs, 1 shl bits);
+        end;
       end;
       3: begin
         size := wk.Field(8, K_TRANS, 19) + 1;
@@ -670,6 +771,7 @@ begin
         if size > 16 then bits := 0 else if size > 4 then bits := 1
         else if size > 2 then bits := 2 else bits := 3;
         xs := DivRound(xs, 1 shl bits);
+        wk.SetPalette(sub, bits);
       end;
     end;
   end;
@@ -677,6 +779,35 @@ begin
   if not wk.DecodeImage(xs, h, True, 0, main) then Exit;
   mainW := xs; mainH := h;
   Result := True;
+end;
+
+{ The frame's colours onto the canvas (only when they are known: a
+  palette image), as a viewer composes them: a transparent pixel of a
+  blended frame leaves the canvas as it was. Then, if the frame is
+  disposed of, its rectangle is cleared before the next one. }
+procedure Compose(var wk: TWalk; const main: TImage; mw: Integer);
+var x, y, per, bpp, idx, cx, cy: Integer; g: LongWord; col: LongWord; st: TWebpState;
+begin
+  st := wk.st;
+  if (wk.palette <> nil) and (mw > 0) then begin
+    per := 1 shl wk.palBits; bpp := 8 shr wk.palBits;
+    for y := 0 to wk.cs.fh - 1 do begin
+      cy := wk.cs.fy + y;
+      if cy >= st.ch then Break;
+      for x := 0 to wk.cs.fw - 1 do begin
+        cx := wk.cs.fx + x;
+        if cx >= st.cw then Break;
+        if SizeInt(y) * mw + (x div per) >= Length(main) then Break;
+        g := (main[SizeInt(y) * mw + (x div per)] shr 8) and 255;
+        idx := (g shr ((x mod per) * bpp)) and ((1 shl bpp) - 1);
+        if idx < Length(wk.palette) then col := wk.palette[idx] else col := 0;
+        if wk.cs.blend and ((col shr 24) = 0) then Continue;
+        st.canvas[SizeInt(cy) * st.cw + cx] := col;
+      end;
+    end;
+  end;
+  st.disposeRect := wk.cs.dispose;
+  st.dx := wk.cs.fx; st.dy := wk.cs.fy; st.dw := wk.cs.fw; st.dh := wk.cs.fh;
 end;
 
 procedure RunWalk(var wk: TWalk; const s: TWebpStream; len: SizeInt);
@@ -695,6 +826,7 @@ begin
   if wk.mode <> MODE_CHECK then begin
     wk.st.prev[s.sub].w := mw; wk.st.prev[s.sub].h := mh;
     wk.st.prev[s.sub].px := main;
+    if wk.useCanvas and not wk.fail then Compose(wk, main, mw);
   end;
 end;
 
@@ -711,44 +843,61 @@ begin
   Result := not wk.fail;
 end;
 
+type
+  TFrameInfo = record
+    inFrame, blend, dispose: Boolean;
+    cw, ch, fx, fy, fw, fh: Integer;
+  end;
+
 procedure Add(const d: TBytes; var r: TWebpStreams; var n: Integer; a, b: SizeInt;
-              sub, w, h: Integer);
+              sub, w, h: Integer; const fi: TFrameInfo);
 var s: TWebpStream;
 begin
   if b - a < 1 then Exit;
+  s := Default(TWebpStream);
   s.dataStart := a; s.dataEnd := b; s.sub := sub; s.width := w; s.height := h;
+  s.inFrame := fi.inFrame; s.blend := fi.blend; s.dispose := fi.dispose;
+  s.cw := fi.cw; s.ch := fi.ch; s.fx := fi.fx; s.fy := fi.fy; s.fw := fi.fw; s.fh := fi.fh;
   if not CheckStream(d, s) then Exit;
   if n >= Length(r) then SetLength(r, n * 2 + 8);
   r[n] := s; Inc(n);
 end;
 
 procedure Walk(const d: TBytes; q, stop: SizeInt; fw, fh: Integer; var r: TWebpStreams;
-               var n: Integer; depth: Integer);
-var sz: SizeInt;
+               var n: Integer; depth: Integer; var fi: TFrameInfo);
+var sz: SizeInt; sub: TFrameInfo;
 begin
   while q + 8 <= stop do begin
     sz := Le32(d, q + 4);
     if q + 8 + sz > stop then Exit;
     if IsId(d, q, 'VP8X') and (sz >= 10) then begin
       fw := Le24(d, q + 12) + 1; fh := Le24(d, q + 15) + 1;
-    end else if IsId(d, q, 'ANMF') and (sz >= 16) and (depth = 0) then
-      Walk(d, q + 8 + 16, q + 8 + sz, Le24(d, q + 14) + 1, Le24(d, q + 17) + 1, r, n, 1)
-    else if IsId(d, q, 'VP8L') then
-      Add(d, r, n, q + 8, q + 8 + sz, WK_VP8L, 0, 0)
+      fi.cw := fw; fi.ch := fh;
+    end else if IsId(d, q, 'ANMF') and (sz >= 16) and (depth = 0) then begin
+      sub := fi;
+      sub.inFrame := True;
+      sub.fx := 2 * Le24(d, q + 8); sub.fy := 2 * Le24(d, q + 11);
+      sub.fw := Le24(d, q + 14) + 1; sub.fh := Le24(d, q + 17) + 1;
+      sub.dispose := (d[q + 8 + 15] and 1) <> 0;
+      sub.blend := (d[q + 8 + 15] and 2) = 0;
+      Walk(d, q + 8 + 16, q + 8 + sz, sub.fw, sub.fh, r, n, 1, sub);
+    end else if IsId(d, q, 'VP8L') then
+      Add(d, r, n, q + 8, q + 8 + sz, WK_VP8L, 0, 0, fi)
     else if IsId(d, q, 'ALPH') and (sz >= 2) and ((d[q + 8] and 3) = 1) and (fw > 0) then
-      Add(d, r, n, q + 9, q + 8 + sz, WK_ALPH, fw, fh);
+      Add(d, r, n, q + 9, q + 8 + sz, WK_ALPH, fw, fh, fi);
     q := q + 8 + sz + (sz and 1);
   end;
 end;
 
 function FindWebpStreams(const d: TBytes): TWebpStreams;
-var n: Integer; stop: SizeInt;
+var n: Integer; stop: SizeInt; fi: TFrameInfo;
 begin
   Result := nil; n := 0;
   if (Length(d) < 12) or not IsId(d, 0, 'RIFF') or not IsId(d, 8, 'WEBP') then Exit;
   stop := 8 + Le32(d, 4);
   if stop > Length(d) then stop := Length(d);
-  Walk(d, 12, stop, 0, 0, Result, n, 0);
+  fi := Default(TFrameInfo);
+  Walk(d, 12, stop, 0, 0, Result, n, 0, fi);
   SetLength(Result, n);
 end;
 
@@ -756,12 +905,29 @@ end;
 
 procedure CodeWebpStream(cd: TCoder; st: TWebpState; const s: TWebpStream;
                          var data: TBytes; len: SizeInt);
-var wk: TWalk;
+var wk: TWalk; x, y: Integer;
 begin
   wk := Default(TWalk);
   wk.cd := cd; wk.st := st;
   wk.prevPx := st.prev[s.sub].px; wk.prevW := st.prev[s.sub].w; wk.prevH := st.prev[s.sub].h;
   wk.io.len := len;
+  { an animation's VP8L frame: its canvas, as the frames before left it }
+  if (s.sub = WK_VP8L) and s.inFrame and (s.cw > 0) and (s.ch > 0) and
+     (SizeInt(s.cw) * s.ch <= MAX_PIXELS) then begin
+    if (st.cw <> s.cw) or (st.ch <> s.ch) or (st.canvas = nil) then begin
+      st.cw := s.cw; st.ch := s.ch;
+      st.canvas := nil; SetLength(st.canvas, SizeInt(s.cw) * s.ch);
+      st.disposeRect := False;
+    end;
+    if st.disposeRect then begin
+      for y := st.dy to st.dy + st.dh - 1 do
+        for x := st.dx to st.dx + st.dw - 1 do
+          if (x < st.cw) and (y < st.ch) then st.canvas[SizeInt(y) * st.cw + x] := 0;
+      st.disposeRect := False;
+    end;
+    wk.useCanvas := True;
+    wk.cs := s;
+  end;
   if cd.encoding then begin
     wk.mode := MODE_ENC;
     wk.io.d := data;

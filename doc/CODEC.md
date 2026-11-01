@@ -241,6 +241,26 @@ from the GIFs and videos of the sample corpus, plus its two animated
 WebPs; each came back the same. The lossless frames are 4 to 15% smaller
 than VP8L made them.
 
+### A canvas for VP8L frames
+
+Animated WebPs made from GIFs are palette images, a frame at an offset,
+blended over the ones before, with what did not change made transparent.
+So, as for GIF, the frames are composed on a canvas, in colours: each
+frame's palette (the colour-indexing transform's table, its entries
+differences from the one before) gives its colours, a transparent pixel
+of a blended frame leaves the canvas as it was, and a disposed frame's
+rectangle is cleared before the next one. Each pixel then has, as
+context, which index of this frame's palette the canvas shows there
+(packed as the pixel packs its indices), together with the palette's
+transparent index; and the choice of a literal, a copy or a cache
+reference sees whether the canvas has an index there, and whether it is
+the transparent one or the left pixel's.
+
+On 4 lossless animated WebPs (1.2 MB): 1,071,624 -> 1,031,558 (-3.7%);
+on the 11 animated WebPs, 81.00% -> 78.46%. (The predictor transform's
+mode as a context too: these frames have none, so it changed nothing
+there.)
+
 ## WebP (`pas/paiavp8.pas`): VP8
 
 Lossy frames are VP8 key frames: a header and partitions, each a
@@ -265,7 +285,8 @@ compression, never exactness.
 | 11 animated WebPs | total | |
 |---|---|---|
 | PAIA 0.0.7 (VP8L) | 4,948,533 | 82.90% |
-| PAIA 0.0.8 (and VP8) | 4,835,369 | **81.00%** |
+| PAIA 0.0.8 (and VP8) | 4,835,369 | 81.00% |
+| PAIA 0.0.9 (VP8 contexts, a canvas for VP8L) | 4,683,816 | **78.46%** |
 | xz -9e | 5,312,648 | 88.99% |
 
 Lossy frames come out 4 to 9% smaller (sample1.webp, a still: 9.1%).

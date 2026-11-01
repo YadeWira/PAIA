@@ -14,8 +14,8 @@
       (paiavp8),
   all through one arithmetic coder.
 
-  STREAM (version 5; proof of concept: not frozen)
-    version   1 B    5
+  STREAM (version 6; proof of concept: not frozen)
+    version   1 B    6
     tables    2 B    log2 of the byte model's and the pixel model's tables
                      (12 to 22: from the sizes, so a small file clears little)
     coded     the rest:
@@ -56,6 +56,9 @@
       a WebP VP8L stream:
         varint  0 a VP8L chunk, 1 an ALPH chunk's data (then the frame's
                 width and height)
+        varint  flags: bit 0 a frame of an animation (then canvas width and
+                height, frame x, y, width, height), bit 1 blended, bit 2
+                disposed of
         varint  data length
         data    (paiawebp.CodeWebpStream)
       a WebP VP8 frame:
@@ -76,7 +79,7 @@ interface
 uses SysUtils, paiaarith, paiamodel, paiagif, paiafli, paiadib, paiaiff, paiawebp, paiavp8;
 
 const
-  STREAM_VERSION = 5;
+  STREAM_VERSION = 6;
 
 type
   TCodecStats = record
@@ -356,6 +359,16 @@ begin
           if wst.sub = WK_ALPH then begin
             wst.width := Bounded(V(wst.width), 1 shl 24);
             wst.height := Bounded(V(wst.height), 1 shl 24);
+          end;
+          { an animation's frame: where on the canvas }
+          flags := Ord(wst.inFrame) + 2 * Ord(wst.blend) + 4 * Ord(wst.dispose);
+          flags := Bounded(V(flags), 7);
+          wst.inFrame := (flags and 1) <> 0; wst.blend := (flags and 2) <> 0;
+          wst.dispose := (flags and 4) <> 0;
+          if wst.inFrame then begin
+            wst.cw := Bounded(V(wst.cw), 1 shl 24); wst.ch := Bounded(V(wst.ch), 1 shl 24);
+            wst.fx := Bounded(V(wst.fx), 1 shl 25); wst.fy := Bounded(V(wst.fy), 1 shl 25);
+            wst.fw := Bounded(V(wst.fw), 1 shl 24); wst.fh := Bounded(V(wst.fh), 1 shl 24);
           end;
           flen := Bounded(V(Length(fdata)), maxOut);
           if wstate = nil then wstate := TWebpState.Create(pixelBits);
