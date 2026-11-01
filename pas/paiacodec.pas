@@ -9,11 +9,13 @@
     - for each BODY and method-5 DLTA of an IFF ANIM: its data, coded field
       by field (paiaiff);
     - for each VP8L stream of a WebP (lossless frames, lossless alpha):
-      its fields' values (paiawebp),
+      its fields' values (paiawebp);
+    - for each VP8 frame of a WebP: its boolean coder's decisions
+      (paiavp8),
   all through one arithmetic coder.
 
-  STREAM (version 3; proof of concept: not frozen)
-    version   1 B    3
+  STREAM (version 4; proof of concept: not frozen)
+    version   1 B    4
     tables    2 B    log2 of the byte model's and the pixel model's tables
                      (12 to 22: from the sizes, so a small file clears little)
     coded     the rest:
@@ -22,9 +24,9 @@
       raw     the bytes
       per record, in file order:
         varint  kind: 0 a GIF image, 1 a FLIC chunk, 2 an ANI bitmap,
-                3 an IFF ANIM chunk, 4 a WebP VP8L stream
+                3 an IFF ANIM chunk, 4 a WebP VP8L stream, 5 a WebP VP8 frame
         varint  where its data goes in the raw bytes, from the previous one
-        varint  kinds 1 to 4: 0, or how many records back is one of the same
+        varint  kinds 1 to 5: 0, or how many records back is one of the same
                 kind with the same data (then nothing else follows)
       a GIF image:
         varint  mcs, width, height, left, top, transparent + 1, disposal,
@@ -55,7 +57,10 @@
         varint  0 a VP8L chunk, 1 an ALPH chunk's data (then the frame's
                 width and height)
         varint  data length
-        data    (paiawebp.CodeWebpStream) }
+        data    (paiawebp.CodeWebpStream)
+      a WebP VP8 frame:
+        varint  data length
+        data    (paiavp8.CodeVp8Stream) }
 unit paiacodec;
 
 {$I paia.inc}
@@ -68,10 +73,10 @@ unit paiacodec;
 
 interface
 
-uses SysUtils, paiaarith, paiamodel, paiagif, paiafli, paiadib, paiaiff, paiawebp;
+uses SysUtils, paiaarith, paiamodel, paiagif, paiafli, paiadib, paiaiff, paiawebp, paiavp8;
 
 const
-  STREAM_VERSION = 3;
+  STREAM_VERSION = 4;
 
 type
   TCodecStats = record
@@ -83,6 +88,7 @@ type
     dibs: Integer;
     iffChunks: Integer;
     webpStreams: Integer;
+    vp8Frames: Integer;
   end;
 
 { The codec stream of d. }
@@ -104,11 +110,13 @@ type
     n: SizeInt;
     info: TLzwInfo;
     kind: Integer;          { 0: a GIF image; 1: a FLIC chunk; 2: an ANI frame's bitmap;
-                              3: an IFF ANIM BODY or DLTA; 4: a WebP VP8L stream }
+                              3: an IFF ANIM BODY or DLTA; 4: a WebP VP8L stream;
+                              5: a WebP VP8 frame }
     fli: TFliChunk;
     dib: TDib;
     iff: TIffChunk;
     wst: TWebpStream;
+    vst: TVp8Stream;
     fdata: TBytes;          { a FLIC chunk's or a bitmap's data }
   end;
   TTakenArray = array of TTaken;
@@ -120,7 +128,8 @@ begin
     1: Result := t.fli.dataStart;
     2: Result := t.dib.dataStart;
     3: Result := t.iff.dataStart;
-  else Result := t.wst.dataStart;
+    4: Result := t.wst.dataStart;
+  else Result := t.vst.dataStart;
   end;
 end;
 
@@ -131,7 +140,8 @@ begin
     1: Result := t.fli.dataEnd;
     2: Result := t.dib.dataEnd;
     3: Result := t.iff.dataEnd;
-  else Result := t.wst.dataEnd;
+    4: Result := t.wst.dataEnd;
+  else Result := t.vst.dataEnd;
   end;
 end;
 
@@ -142,7 +152,8 @@ begin
     1: t.fli.dataStart := p;
     2: t.dib.dataStart := p;
     3: t.iff.dataStart := p;
-  else t.wst.dataStart := p;
+    4: t.wst.dataStart := p;
+  else t.vst.dataStart := p;
   end;
 end;
 
@@ -279,7 +290,7 @@ var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     flags: Integer; canvas: TCanvas; cv, pw: TWords; newStream: Boolean;
     rawLen, flen: SizeInt; fm: TFliModel; fimg: TFliImage; fliStream, gifStream: Integer;
     dm: TDibModel; prevDib: TBytes; k: Integer;
-    itm: TTokenModel; ipm: TDibModel; ist: TAnimState; wstate: TWebpState; dup: Integer;
+    itm: TTokenModel; ipm: TDibModel; ist: TAnimState; wstate: TWebpState; dup: Integer; vm: TVp8Model;
   { the value when encoding; when decoding, whatever was decoded }
   function V(x: Int64): QWord;
   begin
@@ -294,7 +305,7 @@ var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
   end;
 begin
   canvas := nil; fm := nil; fimg := nil; fliStream := -1; gifStream := -1; dm := nil;
-  itm := nil; ipm := nil; ist := nil; wstate := nil;
+  itm := nil; ipm := nil; ist := nil; wstate := nil; vm := nil;
   bm := TByteModel.Create(byteBits);
   pm := TPixelModel.Create(pixelBits);
   try
@@ -305,7 +316,7 @@ begin
     last := 0;
     for i := 0 to count - 1 do
       with tk[i] do begin
-        kind := Bounded(V(kind), 4);
+        kind := Bounded(V(kind), 5);
         pos := Bounded(V(Int64(StartOf(tk[i])) - Int64(last)), rawLen - last) + last;
         SetStart(tk[i], pos); last := pos;
         { data the same as an earlier record's of the same kind (a repeated
@@ -327,10 +338,17 @@ begin
             { the same description on both sides (the decoder has only the
               earlier record's), so that what looks back at it agrees }
             fli := tk[i - dup].fli; dib := tk[i - dup].dib;
-            iff := tk[i - dup].iff; wst := tk[i - dup].wst;
+            iff := tk[i - dup].iff; wst := tk[i - dup].wst; vst := tk[i - dup].vst;
             SetStart(tk[i], pos);
             Continue;
           end;
+        end;
+        if kind = 5 then begin
+          { a WebP VP8 frame }
+          flen := Bounded(V(Length(fdata)), maxOut);
+          if vm = nil then vm := TVp8Model.Create(pixelBits);
+          CodeVp8Stream(cd, vm, fdata, flen);
+          Continue;
         end;
         if kind = 4 then begin
           { a WebP VP8L stream }
@@ -463,6 +481,7 @@ begin
         canvas.Paint(img, px, n);
       end;
   finally
+    vm.Free;
     wstate.Free;
     ist.Free; ipm.Free; itm.Free;
     dm.Free;
@@ -475,7 +494,8 @@ begin
 end;
 
 function Compress(const d: TBytes; out stats: TCodecStats): TBytes;
-var imgs: TGifImages; flis: TFliChunks; dibs: TDibs; iffs: TIffChunks; wsts: TWebpStreams; tk, all: TTakenArray; raw, body: TBytes;
+var imgs: TGifImages; flis: TFliChunks; dibs: TDibs; iffs: TIffChunks; wsts: TWebpStreams;
+    vsts: TVp8Streams; tk, all: TTakenArray; raw, body: TBytes;
     i, j, count, n: Integer; q, o: SizeInt; cd: TCoder; t: TTaken; pixels: QWord;
     byteBits, pixelBits: Integer;
 begin
@@ -509,7 +529,9 @@ begin
   stats.iffChunks := Length(iffs);
   wsts := FindWebpStreams(d);
   stats.webpStreams := Length(wsts);
-  all := nil; SetLength(all, count + Length(flis) + Length(dibs) + Length(iffs) + Length(wsts));
+  vsts := FindVp8Streams(d);
+  stats.vp8Frames := Length(vsts);
+  all := nil; SetLength(all, count + Length(flis) + Length(dibs) + Length(iffs) + Length(wsts) + Length(vsts));
   n := count;
   for j := 0 to High(flis) do begin
     t := Default(TTaken);
@@ -533,6 +555,12 @@ begin
     t := Default(TTaken);
     t.kind := 4; t.wst := wsts[j];
     t.fdata := Copy(d, t.wst.dataStart, t.wst.dataEnd - t.wst.dataStart);
+    all[n] := t; Inc(n);
+  end;
+  for j := 0 to High(vsts) do begin
+    t := Default(TTaken);
+    t.kind := 5; t.vst := vsts[j];
+    t.fdata := Copy(d, t.vst.dataStart, t.vst.dataEnd - t.vst.dataStart);
     all[n] := t; Inc(n);
   end;
   for j := 0 to count - 1 do all[j] := tk[j];

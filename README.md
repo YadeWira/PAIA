@@ -3,8 +3,8 @@
 **packAnimatedImage Algorithm**: lossless recompression of animated images,
 in FreePascal with C and embedded assembly; no libraries.
 
-> **Status: proof of concept.** GIF, FLI/FLC, ANI, IFF ANIM and lossless WebP
-> work; nothing to download yet. The
+> **Status: proof of concept.** GIF, FLI/FLC, ANI, IFF ANIM and WebP work;
+> nothing to download yet. The
 > format is not frozen: no file written by an early build is promised to
 > open later.
 
@@ -17,7 +17,7 @@ paia t anim.paia         # extract in memory and check
 On the 62 GIF files of the sample corpus: **44.79%** of their size, against
 95.60% for xz -9e and 7-Zip; on its 29 FLI/FLC animations, **32.43%**
 against 46.45%; on its 26 ANI cursors, **8.98%** against 14.69%; on its 14 IFF ANIMs,
-**46.40%** against 52.22%; on 11 animated WebPs, **82.90%** against 88.99%;
+**46.40%** against 52.22%; on 11 animated WebPs, **81.00%** against 88.99%;
 every file coming back the same
 ([doc/CODEC.md](doc/CODEC.md)).
 
@@ -43,7 +43,7 @@ The animated formats PAIA aims to take ([doc/FORMATS.md](doc/FORMATS.md)):
 | Format | Extension | Coding | PAIA |
 |---|---|---|---|
 | GIF | `.gif` | LZW, palette of up to 256 colours | works |
-| Animated WebP | `.webp` | VP8 / VP8L in RIFF | VP8L and lossless alpha work; VP8 not yet |
+| Animated WebP | `.webp` | VP8 / VP8L in RIFF | works (VP8, VP8L, lossless alpha) |
 | Animated AVIF | `.avif`, `.avifs` | AV1 in ISOBMFF | |
 | HEIF image sequence | `.heics`, `.heic` | HEVC in ISOBMFF | |
 | BPG | `.bpg` | HEVC | |

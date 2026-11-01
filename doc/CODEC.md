@@ -239,7 +239,37 @@ back) are coded as how far back that record is, for every format taken.
 Made with gif2webp (lossless, lossy, mixed, `-m 6`) and ffmpeg's libwebp
 from the GIFs and videos of the sample corpus, plus its two animated
 WebPs; each came back the same. The lossless frames are 4 to 15% smaller
-than VP8L made them. Lossy frames (VP8) still go as bytes.
+than VP8L made them.
+
+## WebP (`pas/paiavp8.pas`): VP8
+
+Lossy frames are VP8 key frames: a header and partitions, each a
+boolean-coded stream (binary arithmetic coding with 8-bit probabilities):
+the first with the frame header, the coefficient probabilities and each
+macroblock's modes, the others with the coefficients' tokens. A boolean
+decoder given the right probabilities and an encoder given the same
+decisions with the same probabilities are exact inverses. So each decision
+is read with its probability, as libwebp reads it, and coded by a model
+that mixes that probability with what VP8 does not look at: the
+coefficients at the same place in the blocks above and to the left (the
+idea of Lepton and packJPG), how many are non-zero so far in the block,
+the last one's size, its place. Extracting writes the decisions again with
+libwebp's own boolean writer: the bytes come back equal up to each
+partition's end, and on libwebp's streams usually to the last byte; what
+differs there (another writer's flush, bytes past the end) is kept.
+
+A wrong context, or a wrong table, could only make a decision be read with
+another probability and written again with that same one: it would cost
+compression, never exactness.
+
+| 11 animated WebPs | total | |
+|---|---|---|
+| PAIA 0.0.7 (VP8L) | 4,948,533 | 82.90% |
+| PAIA 0.0.8 (and VP8) | 4,835,369 | **81.00%** |
+| xz -9e | 5,312,648 | 88.99% |
+
+Lossy frames come out 4 to 9% smaller (sample1.webp, a still: 9.1%). The
+8 WebPs of the sample corpus, stills included: 86.96%, xz 93.89%.
 
 Not yet good:
 - **Files that are not GIF** (or the non-GIF part of one): orders 0-3 lose

@@ -27,7 +27,8 @@ all of them.
 
 `webp/`: WebPs made with gif2webp and cwebp from the GIF samples above:
 lossless animations (one with `-m 6`), a lossy one with lossless alpha,
-a mixed one, a still lossless image, and a truncated file.
+a mixed one, a still lossless image, lossy stills with four segments and
+with one (no spatial noise shaping, no filter), and a truncated file.
 
 `run_tests.sh` also fails when the codec falls back to storing a sample
 because of an error of its own: the fallback is right for users, but it
