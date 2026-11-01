@@ -182,7 +182,7 @@ begin
   WriteAll(dst, f);
   if not quiet then
     Writeln(name, ': ', Length(d), ' -> ', Length(f), ' (', Pct(Length(f), Length(d)), ')',
-            '  images ', st.imagesTaken, '/', st.images, '  flic chunks ', st.fliChunks, '  ani bitmaps ', st.dibs, '  iff chunks ', st.iffChunks,
+            '  images ', st.imagesTaken, '/', st.images, '  flic chunks ', st.fliChunks, '  ani bitmaps ', st.dibs, '  iff chunks ', st.iffChunks, '  vp8l ', st.webpStreams,
             '  pixels ', st.pixels, '  exceptions ', st.exceptions,
             BoolToStr(stored, '  STORED', ''), '  ', (GetTickCount64 - t0) / 1000:0:2, ' s');
   Result := True;
@@ -201,7 +201,7 @@ end;
 var i, failures, files: Integer; cmd: string; names: TStringList;
 begin
   if ParamCount < 2 then begin
-    Writeln('paia 0.0.6 (proof of concept): lossless recompression of animated images');
+    Writeln('paia 0.0.7 (proof of concept): lossless recompression of animated images');
     Writeln('usage: paia a|x|t [-o DIR] [-f] [-q] FILE...');
     Halt(2);
   end;

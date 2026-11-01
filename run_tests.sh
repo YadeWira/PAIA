@@ -15,10 +15,14 @@ fpc -O2 -Fu"$HERE/pas" -FU"$B/checked" "$HERE/pas/tests/test_blake3.pas" -o"$B/t
 
 echo "== samples"
 fail=0; n=0
-for f in "$HERE"/tests/gif/* "$HERE"/tests/fli/* "$HERE"/tests/ani/* "$HERE"/tests/anim/*; do
+for f in "$HERE"/tests/gif/* "$HERE"/tests/fli/* "$HERE"/tests/ani/* "$HERE"/tests/anim/* "$HERE"/tests/webp/*; do
   b=$(basename "$f"); n=$((n+1))
   mkdir -p "$T/c" "$T/f" "$T/x" "$T/bad"
-  "$B/paia-checked" a -q -f -o "$T/c" "$f"
+  # a codec error falls back to storing the file: right for users, but a
+  # bug here, which the fallback would otherwise hide
+  if "$B/paia-checked" a -f -o "$T/c" "$f" 2>&1 | grep -q 'codec failed'; then
+    echo "  $b: the codec failed (stored instead)"; fail=1
+  fi
   "$B/paia" a -q -f -o "$T/f" "$f"
   p="${b%.*}.paia"
   if ! cmp -s "$T/c/$p" "$T/f/$p"; then echo "  $b: the two builds differ"; fail=1; fi

@@ -169,7 +169,8 @@ model.
 
 | 26 ANIs of the sample corpus (12.9 MB) | total | |
 |---|---|---|
-| PAIA 0.0.5 | 1,160,270 | **8.98%** |
+| PAIA 0.0.5 | 1,160,270 | 8.98% |
+| PAIA 0.0.7 (repeated frames as references) | 1,161,523 | **8.98%** |
 | xz -9e | 1,899,296 | 14.69% |
 
 Each came back the same; so did the 40 files named `.ani` there that are
@@ -202,6 +203,43 @@ back, compresses worse on every file tried, as it should.
 
 Each came back the same. Not taken yet: delta methods 3 and 74 ("J"),
 0.9 MB of the corpus, on whose two files xz is still smaller.
+
+## WebP (`pas/paiawebp.pas`): VP8L
+
+Lossless WebP frames (VP8L chunks) and the lossless alpha of lossy ones
+(ALPH chunks, compression 1: a VP8L stream without its header) are taken.
+A VP8L encoder chooses a great deal (transforms, prefix codes, matches,
+cache), and none of it is guessed: the stream is walked field by field as
+a decoder reads it (the header, the transforms and their sub-images, the
+colour cache, the meta prefix codes, each prefix code as its code lengths
+were written, simple or not, with the repeat codes and the maximum
+symbol) and each field's value is coded; the pixels as what they are: a
+literal (green, red, blue, alpha: through a pixel model with the
+neighbours in the same image, the green of the same pixel, and the
+previous frame's image of the same size), a copy (length and distance,
+prefix symbols and extra bits) or a cache reference. Extracting walks the
+same fields and writes each symbol with its own code, under the same code
+lengths: the same bits, by construction.
+
+One walk checks a stream (a stream it refuses stays as bytes), encodes it
+and decodes it, so the three cannot disagree. The pixel values are
+context only (the transforms are not undone): an error there would cost
+compression, never exactness.
+
+Records whose data is the same as an earlier record's of the same kind
+(a repeated frame: an animation that holds still, a cursor that comes
+back) are coded as how far back that record is, for every format taken.
+
+| 11 animated WebPs (6.0 MB: 7 lossless; 4 lossy with lossless alpha) | total | |
+|---|---|---|
+| PAIA 0.0.6 (everything as plain bytes) | 5,349,438 | 89.61% |
+| PAIA 0.0.7 | 4,948,533 | **82.90%** |
+| xz -9e | 5,312,648 | 88.99% |
+
+Made with gif2webp (lossless, lossy, mixed, `-m 6`) and ffmpeg's libwebp
+from the GIFs and videos of the sample corpus, plus its two animated
+WebPs; each came back the same. The lossless frames are 4 to 15% smaller
+than VP8L made them. Lossy frames (VP8) still go as bytes.
 
 Not yet good:
 - **Files that are not GIF** (or the non-GIF part of one): orders 0-3 lose

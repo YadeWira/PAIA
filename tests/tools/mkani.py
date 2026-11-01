@@ -67,5 +67,10 @@ ani(os.path.join(out, 'cursor32.ani'), [icon([(32, 32, 32, dib(32, 32, 32, k))],
 ani(os.path.join(out, 'icons_mixed.ani'), [icon([(32, 32, 24, dib(32, 32, 24, k)), (16, 16, 4, dib(16, 16, 4, k)),
                                                    (32, 32, 1, dib(32, 32, 1, k))], False) for k in range(4)])
 ani(os.path.join(out, 'with_png.ani'), [icon([(24, 24, 32, png(24, 24, k) if k % 2 else dib(24, 24, 32, k))], False) for k in range(4)])
+# repeated frames (the same bitmap again, as many cursors do): A B A C, so
+# that what follows a repeat looks back past it; and a second shape
+rep = [icon([(32, 32, 32, dib(32, 32, 32, k))], False) for k in (0, 1, 0, 2)] + \
+      [icon([(16, 16, 24, dib(16, 16, 24, 0))], False) for k in range(2)]
+ani(os.path.join(out, 'repeated.ani'), rep)
 d = open(os.path.join(out, 'cursor32.ani'), 'rb').read()
 open(os.path.join(out, 'truncated.ani'), 'wb').write(d[:len(d) * 3 // 5])
