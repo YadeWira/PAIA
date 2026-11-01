@@ -175,6 +175,34 @@ model.
 Each came back the same; so did the 40 files named `.ani` there that are
 not ANIs (107 MB: 63.82%, xz 65.75%).
 
+## IFF ANIM (`pas/paiaiff.pas`)
+
+An Amiga ANIM is a FORM ANIM of FORM ILBMs: the first frame as a BODY
+(bitplanes, row by row and plane by plane, ByteRun1-compressed or not),
+each other as a DLTA. The deltas taken are method 5, Byte Vertical Delta,
+by far the most used: for each plane a pointer, and for each column of
+bytes a list of operations going down the rows (skip rows, repeat a byte,
+take bytes as they are), setting or, in XOR mode, flipping the bits.
+
+As for FLICs, a BODY's and a DLTA's bytes are coded in their own order,
+field by field: the structure (pointers, operation counts, operations,
+repeat counts, ByteRun1 headers) to a token model, the bitplane bytes to
+a model that sees the bitmaps as the frames build them: what the byte
+replaces, the frame shown before, the bytes above and to the left in its
+plane, the plane below at the same place, and a match model. The frames
+are double buffered, as Amiga players draw them: a delta changes the
+frame two back (unless its ANHD says one back). The other reading, one
+back, compresses worse on every file tried, as it should.
+
+| 14 ANIMs of the sample corpus (6.1 MB) | total | |
+|---|---|---|
+| PAIA 0.0.5 (everything as plain bytes) | 3,336,322 | 54.47% |
+| PAIA 0.0.6 | 2,842,474 | **46.41%** |
+| xz -9e | 3,198,248 | 52.22% |
+
+Each came back the same. Not taken yet: delta methods 3 and 74 ("J"),
+0.9 MB of the corpus, on whose two files xz is still smaller.
+
 Not yet good:
 - **Files that are not GIF** (or the non-GIF part of one): orders 0-3 lose
   to xz on some (an Inventor file, a Windows resource).

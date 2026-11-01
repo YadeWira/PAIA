@@ -15,5 +15,7 @@ fpc -O2 -vw -FUbuild/checked paiacli.pas -obuild/paia-checked | grep -E 'Warning
 fpc -O3 -vw -dPAIA_FAST -FUbuild/fast -Flbuild/fast -Fobuild/fast paiacli.pas -obuild/paia | grep -E 'Warning|Error' || true
 # the release build without C: the same bytes, for comparing speeds
 fpc -O3 -vw -dPAIA_FAST -dPAIA_PURE -FUbuild/pure paiacli.pas -obuild/paia-pure | grep -E 'Warning|Error' || true
-[ -x build/paia ] && [ -x build/paia-checked ] && [ -x build/paia-pure ]
+if [ ! -x build/paia ] || [ ! -x build/paia-checked ] || [ ! -x build/paia-pure ]; then
+  echo "BUILD FAILED" >&2; exit 1
+fi
 echo "built pas/build/paia (Pascal + C), paia-pure (Pascal) and paia-checked"

@@ -18,3 +18,8 @@ decodes all of them.
 hand writes ANI): frames of 32, 24, 4 and 1 bits a pixel, a CUR with
 hotspots, rate and sequence chunks, a frame kept as PNG, and a truncated
 file. Each frame, taken out, is a valid ICO or CUR for ImageMagick.
+
+`anim/`: IFF ANIMs written by `tools/mkanim.py`: a ByteRun1 BODY and an
+uncompressed one, Byte Vertical Delta frames double buffered as Amiga
+players draw them, one in XOR mode, and a truncated file. ffmpeg decodes
+all of them.

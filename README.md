@@ -3,7 +3,7 @@
 **packAnimatedImage Algorithm**: lossless recompression of animated images,
 in FreePascal with C and embedded assembly; no libraries.
 
-> **Status: proof of concept.** GIF, FLI/FLC and ANI work; nothing to download yet. The
+> **Status: proof of concept.** GIF, FLI/FLC, ANI and IFF ANIM work; nothing to download yet. The
 > format is not frozen: no file written by an early build is promised to
 > open later.
 
@@ -15,8 +15,8 @@ paia t anim.paia         # extract in memory and check
 
 On the 62 GIF files of the sample corpus: **44.79%** of their size, against
 95.60% for xz -9e and 7-Zip; on its 29 FLI/FLC animations, **32.43%**
-against 46.45%; on its 26 ANI cursors, **8.98%** against 14.69%; every file
-coming back the same
+against 46.45%; on its 26 ANI cursors, **8.98%** against 14.69%; on its 14 IFF ANIMs,
+**46.41%** against 52.22%; every file coming back the same
 ([doc/CODEC.md](doc/CODEC.md)).
 
 PAIA belongs to a family of recompressors that share one rule: the original
@@ -48,7 +48,7 @@ The animated formats PAIA aims to take ([doc/FORMATS.md](doc/FORMATS.md)):
 | FLI / FLC | `.fli`, `.flc` | RLE and frame deltas, palette | works (8 bits) |
 | ANI | `.ani` | ICO/CUR frames in RIFF | works (bitmap frames) |
 | FLIF | `.flif` | MANIAC | |
-| IFF ANIM | `.anim`, `.iff` | ByteRun and frame deltas | |
+| IFF ANIM | `.anim`, `.iff` | ByteRun and frame deltas | works (delta method 5) |
 
 APNG, MNG and JNG belong to PPA; JPEG XL is left aside.
 

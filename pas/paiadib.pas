@@ -37,9 +37,12 @@ type
     mx: TMixer;
     apm: TApm;
     mm: TMatchModel;
-    function Code(cd: TCoder; v: Integer; const c: array of Integer): Integer;
   public
     constructor Create(tableBits: Integer);
+    { a byte, from its context: c[0] a channel or mode (0-7), c[1..8]
+      values (256: none) whose roles are paiadib's: left, up, up-left,
+      up-right, the previous frame, a prediction, and two more together }
+    function Code(cd: TCoder; v: Integer; const c: array of Integer): Integer;
   end;
 
 { The DIBs of the ANI at the start of d, if it is one. }

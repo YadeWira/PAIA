@@ -5,7 +5,9 @@
       rebuilds the LZW from them (paiagif.TLzwInfo);
     - for each FLIC pixel chunk: its data, coded field by field (paiafli);
     - for each bitmap of an ANI's frames: its rows, coded byte by byte
-      (paiadib),
+      (paiadib);
+    - for each BODY and method-5 DLTA of an IFF ANIM: its data, coded field
+      by field (paiaiff),
   all through one arithmetic coder.
 
   STREAM (version 2; proof of concept: not frozen)
@@ -17,7 +19,8 @@
       varint  record count
       raw     the bytes
       per record, in file order:
-        varint  kind: 0 a GIF image, 1 a FLIC chunk, 2 an ANI bitmap
+        varint  kind: 0 a GIF image, 1 a FLIC chunk, 2 an ANI bitmap,
+                3 an IFF ANIM chunk
         varint  where its data goes in the raw bytes, from the previous one
       a GIF image:
         varint  mcs, width, height, left, top, transparent + 1, disposal,
@@ -37,7 +40,13 @@
       an ANI bitmap:
         varint  width, height, bits a pixel, data length
         data    (paiadib.CodeDib), the previous bitmap of the same shape
-                as context }
+                as context
+      an IFF ANIM chunk:
+        varint  0 an uncompressed BODY, 1 a ByteRun1 BODY, 2 a method-5 DLTA
+        varint  a BODY: width, height, planes (it starts an animation);
+                a DLTA: ANHD's interleave, XOR mode
+        varint  data length
+        data    (paiaiff.CodeIffChunk) }
 unit paiacodec;
 
 {$I paia.inc}
@@ -50,7 +59,7 @@ unit paiacodec;
 
 interface
 
-uses SysUtils, paiaarith, paiamodel, paiagif, paiafli, paiadib;
+uses SysUtils, paiaarith, paiamodel, paiagif, paiafli, paiadib, paiaiff;
 
 const
   STREAM_VERSION = 2;
@@ -63,6 +72,7 @@ type
     exceptions: SizeInt;
     fliChunks: Integer;
     dibs: Integer;
+    iffChunks: Integer;
   end;
 
 { The codec stream of d. }
@@ -83,9 +93,11 @@ type
     px: TBytes;
     n: SizeInt;
     info: TLzwInfo;
-    kind: Integer;          { 0: a GIF image; 1: a FLIC chunk; 2: an ANI frame's bitmap }
+    kind: Integer;          { 0: a GIF image; 1: a FLIC chunk; 2: an ANI frame's bitmap;
+                              3: an IFF ANIM BODY or DLTA }
     fli: TFliChunk;
     dib: TDib;
+    iff: TIffChunk;
     fdata: TBytes;          { a FLIC chunk's or a bitmap's data }
   end;
   TTakenArray = array of TTaken;
@@ -95,7 +107,8 @@ begin
   case t.kind of
     0: Result := t.img.dataStart;
     1: Result := t.fli.dataStart;
-  else Result := t.dib.dataStart;
+    2: Result := t.dib.dataStart;
+  else Result := t.iff.dataStart;
   end;
 end;
 
@@ -104,7 +117,8 @@ begin
   case t.kind of
     0: Result := t.img.dataEnd;
     1: Result := t.fli.dataEnd;
-  else Result := t.dib.dataEnd;
+    2: Result := t.dib.dataEnd;
+  else Result := t.iff.dataEnd;
   end;
 end;
 
@@ -113,7 +127,8 @@ begin
   case t.kind of
     0: t.img.dataStart := p;
     1: t.fli.dataStart := p;
-  else t.dib.dataStart := p;
+    2: t.dib.dataStart := p;
+  else t.iff.dataStart := p;
   end;
 end;
 
@@ -250,6 +265,7 @@ var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     flags: Integer; canvas: TCanvas; cv, pw: TWords; newStream: Boolean;
     rawLen, flen: SizeInt; fm: TFliModel; fimg: TFliImage; fliStream, gifStream: Integer;
     dm: TDibModel; prevDib: TBytes; k: Integer;
+    itm: TTokenModel; ipm: TDibModel; ist: TAnimState;
   { the value when encoding; when decoding, whatever was decoded }
   function V(x: Int64): QWord;
   begin
@@ -264,6 +280,7 @@ var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
   end;
 begin
   canvas := nil; fm := nil; fimg := nil; fliStream := -1; gifStream := -1; dm := nil;
+  itm := nil; ipm := nil; ist := nil;
   bm := TByteModel.Create(byteBits);
   pm := TPixelModel.Create(pixelBits);
   try
@@ -274,9 +291,35 @@ begin
     last := 0;
     for i := 0 to count - 1 do
       with tk[i] do begin
-        kind := Bounded(V(kind), 2);
+        kind := Bounded(V(kind), 3);
         pos := Bounded(V(Int64(StartOf(tk[i])) - Int64(last)), rawLen - last) + last;
         SetStart(tk[i], pos); last := pos;
+        if kind = 3 then begin
+          { an IFF ANIM's BODY or DLTA }
+          iff.sub := Bounded(V(iff.sub), 2);
+          { a BODY starts an animation: its shape }
+          if iff.sub <> IK_DLTA5 then begin
+            iff.width := Bounded(V(iff.width), 65535);
+            iff.height := Bounded(V(iff.height), 65535);
+            iff.planes := Bounded(V(iff.planes), 8);
+            if (iff.width < 1) or (iff.height < 1) or (iff.planes < 1) or
+               (SizeInt(iff.width) * iff.height > SizeInt(1) shl 24) then
+              raise Exception.Create('paiacodec: damaged stream');
+            ist.Free;
+            ist := TAnimState.Create(iff.width, iff.height, iff.planes);
+          end else begin
+            iff.interleave := Bounded(V(iff.interleave), 255);
+            iff.xorMode := Bounded(V(Ord(iff.xorMode)), 1) <> 0;
+          end;
+          if ist = nil then raise Exception.Create('paiacodec: damaged stream');
+          flen := Bounded(V(Length(fdata)), maxOut);
+          if itm = nil then begin
+            itm := TTokenModel.Create(pixelBits - 2);
+            ipm := TDibModel.Create(pixelBits);
+          end;
+          CodeIffChunk(cd, itm, ipm, ist, iff, fdata, flen);
+          Continue;
+        end;
         if kind = 2 then begin
           { an ANI frame's bitmap }
           dib.width := Bounded(V(dib.width), 4096);
@@ -370,6 +413,7 @@ begin
         canvas.Paint(img, px, n);
       end;
   finally
+    ist.Free; ipm.Free; itm.Free;
     dm.Free;
     fimg.Free;
     fm.Free;
@@ -380,7 +424,7 @@ begin
 end;
 
 function Compress(const d: TBytes; out stats: TCodecStats): TBytes;
-var imgs: TGifImages; flis: TFliChunks; dibs: TDibs; tk, all: TTakenArray; raw, body: TBytes;
+var imgs: TGifImages; flis: TFliChunks; dibs: TDibs; iffs: TIffChunks; tk, all: TTakenArray; raw, body: TBytes;
     i, j, count, n: Integer; q, o: SizeInt; cd: TCoder; t: TTaken; pixels: QWord;
     byteBits, pixelBits: Integer;
 begin
@@ -408,7 +452,11 @@ begin
   stats.fliChunks := Length(flis);
   dibs := FindDibs(d);
   stats.dibs := Length(dibs);
-  all := nil; SetLength(all, count + Length(flis) + Length(dibs));
+  iffs := FindIffChunks(d);
+  { a DLTA before any BODY has no frame to change: such an ANIM stays as bytes }
+  if (Length(iffs) > 0) and (iffs[0].sub = IK_DLTA5) then iffs := nil;
+  stats.iffChunks := Length(iffs);
+  all := nil; SetLength(all, count + Length(flis) + Length(dibs) + Length(iffs));
   n := count;
   for j := 0 to High(flis) do begin
     t := Default(TTaken);
@@ -420,6 +468,12 @@ begin
     t := Default(TTaken);
     t.kind := 2; t.dib := dibs[j];
     t.fdata := Copy(d, t.dib.dataStart, t.dib.dataEnd - t.dib.dataStart);
+    all[n] := t; Inc(n);
+  end;
+  for j := 0 to High(iffs) do begin
+    t := Default(TTaken);
+    t.kind := 3; t.iff := iffs[j];
+    t.fdata := Copy(d, t.iff.dataStart, t.iff.dataEnd - t.iff.dataStart);
     all[n] := t; Inc(n);
   end;
   for j := 0 to count - 1 do all[j] := tk[j];
