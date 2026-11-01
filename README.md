@@ -56,6 +56,14 @@ The animated formats PAIA aims to take ([doc/FORMATS.md](doc/FORMATS.md)):
 
 APNG, MNG and JNG belong to PPA; JPEG XL is left aside.
 
+## More
+
+The [wiki](https://github.com/YadeWira/PAIA/wiki) has the rest: [what PAIA
+handles](https://github.com/YadeWira/PAIA/wiki/What-PAIA-handles),
+[benchmarks](https://github.com/YadeWira/PAIA/wiki/Benchmarks) and [how it
+works](https://github.com/YadeWira/PAIA/wiki/How-it-works). The codec's
+full notes, with every measurement, are in [doc/CODEC.md](doc/CODEC.md).
+
 ## Building
 
 FreePascal 3.2 and a C compiler (gcc or clang):
