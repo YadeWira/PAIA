@@ -5,4 +5,13 @@ Licensed under the MIT License (see LICENSE).
 Third-party work
 ----------------
 
-None yet. Anything derived from other work will be credited here.
+BLAKE3 (pas/paiablake3.pas) and its test (pas/tests/test_blake3.pas,
+pas/tests/kat.txt): taken from PJA (github.com/YadeWira/PJA), same author
+and license; written there from the BLAKE3 specification and checked
+against the official implementation's output.
+
+Credits (ideas, no code taken)
+------------------------------
+
+The arithmetic coder, counters, mixer and adaptive probability map
+(pas/paiaarith.pas) follow the forms of Matt Mahoney's lpaq and paq8.

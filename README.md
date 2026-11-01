@@ -3,8 +3,19 @@
 **packAnimatedImage Algorithm**: lossless recompression of animated images,
 in FreePascal with C and embedded assembly; no libraries.
 
-> **Status: proof of concept.** Nothing to download yet; the format is not
-> frozen and no file written by an early build is promised to open later.
+> **Status: proof of concept.** GIF works; nothing to download yet. The
+> format is not frozen: no file written by an early build is promised to
+> open later.
+
+```sh
+paia a anim.gif          # -> anim.paia
+paia x anim.paia         # -> anim.gif, the same file byte for byte
+paia t anim.paia         # extract in memory and check
+```
+
+On the 62 GIF files of the sample corpus: **46.82%** of their size, against
+95.60% for xz -9e and 7-Zip, every file coming back the same
+([doc/CODEC.md](doc/CODEC.md)).
 
 PAIA belongs to a family of recompressors that share one rule: the original
 comes back **byte for byte**, and nothing is written unless it verified.
@@ -38,6 +49,15 @@ The animated formats PAIA aims to take ([doc/FORMATS.md](doc/FORMATS.md)):
 | IFF ANIM | `.anim`, `.iff` | ByteRun and frame deltas |
 
 APNG, MNG and JNG belong to PPA; JPEG XL is left aside.
+
+## Building
+
+FreePascal 3.2:
+
+```sh
+pas/build.sh          # pas/build/paia, and pas/build/paia-checked
+./run_tests.sh        # every test
+```
 
 ## License
 

@@ -1,0 +1,327 @@
+{ Codec layer: binary arithmetic coder, counters, a logistic mixer and an
+  adaptive probability map.
+
+  Integer only, so every platform and compiler gives the same bytes.
+
+  The coder is carryless, with the interval in 32 bits [x1, x2] (the lpaq
+  form): whenever both ends agree on the top byte, that byte is emitted.
+  Probabilities are 12 bits: p = P(bit = 1) * 4096, in [1, 4095].
+
+  The decoder cannot fail: past the end of its data it reads zeros. A
+  damaged stream decodes to something else, and that is caught by the layer
+  above (size and hash of the original), not by this one. }
+unit paiaarith;
+
+{$I paia.inc}
+{$ifdef PAIA_FAST}
+  {$R-}{$Q-}
+{$else}
+  {$ifopt R-}{$fatal paiaarith: range checks ($R+) are mandatory}{$endif}
+  {$ifopt Q-}{$fatal paiaarith: overflow checks ($Q+) are mandatory}{$endif}
+{$endif}
+
+interface
+
+uses SysUtils;
+
+type
+  TArithEncoder = record
+    x1, x2: LongWord;
+    d: TBytes;
+    n: SizeInt;
+    procedure Init;
+    procedure Encode(bit: Integer; p12: Integer);
+    function Finish: TBytes;
+  end;
+
+  TArithDecoder = record
+    x1, x2, x: LongWord;
+    d: TBytes;
+    p, last: SizeInt;
+    procedure Init(const data: TBytes; first, len: SizeInt);
+    function Decode(p12: Integer): Integer;
+  end;
+
+  { One side of a coding session: the same model code drives both. }
+  TCoder = class
+  public
+    encoding: Boolean;
+    enc: TArithEncoder;
+    dec: TArithDecoder;
+    constructor CreateEncoder;
+    constructor CreateDecoder(const data: TBytes; first, len: SizeInt);
+    { encoding: codes `bit` and returns it; decoding: returns the bit }
+    function Code(bit: Integer; p12: Integer): Integer; inline;
+  end;
+
+{ ln(p / (1 - p)) scaled to [-2047, 2047], for p in 12 bits; and back. }
+function Stretch(p12: Integer): Integer; inline;
+function Squash(x: Integer): Integer;
+
+type
+  { Adaptive probabilities: 16 bits each, the rate slowing from 1/2 to
+    1/(limit + 2) as each one sees more. }
+  TCounters = record
+    p: array of Word;
+    n: array of Byte;
+    mask: SizeInt;
+    limit: Integer;
+    procedure Init(bits: Integer; aLimit: Integer);
+    function P12(i: SizeInt): Integer; inline;
+    procedure Update(i: SizeInt; bit: Integer); inline;
+  end;
+
+  { A logistic mixer: several stretched predictions, one weight set chosen
+    by a small context, trained on the coding error. }
+  TMixer = record
+    nIn, nSets: Integer;
+    w: array of LongInt;
+    x: array of LongInt;
+    k, cur, pr, rate: Integer;
+    procedure Init(inputs, sets, aRate: Integer);
+    procedure Add(st: Integer); inline;
+    function Mix(ctx: Integer): Integer;
+    procedure Update(bit: Integer);
+  end;
+
+  { An adaptive probability map (secondary estimation): refines a
+    probability given a context, interpolating between 33 buckets. }
+  TApm = record
+    t: array of Word;
+    idx: SizeInt;
+    rate: Integer;
+    procedure Init(contexts: SizeInt; aRate: Integer);
+    function Refine(p12: Integer; ctx: SizeInt): Integer;
+    procedure Update(bit: Integer);
+  end;
+
+implementation
+
+var
+  stretchTab: array[0..4095] of SmallInt;
+  rateTab: array[0..255] of LongInt;
+
+function Squash(x: Integer): Integer;
+const t: array[0..32] of Integer = (
+  1, 2, 3, 6, 10, 16, 27, 45, 73, 120, 194, 310, 488, 747, 1101,
+  1546, 2047, 2549, 2994, 3348, 3607, 3785, 3901, 3975, 4024,
+  4050, 4068, 4079, 4085, 4089, 4092, 4093, 4094);
+var v, i, w: Integer;
+begin
+  if x > 2047 then Exit(4095);
+  if x < -2047 then Exit(1);
+  v := x + 2048;                     { 1 .. 4095 }
+  i := v shr 7;                      { 0 .. 31 }
+  w := v and 127;
+  Result := (t[i] * (128 - w) + t[i + 1] * w + 64) shr 7;
+  if Result < 1 then Result := 1;
+  if Result > 4095 then Result := 4095;
+end;
+
+function Stretch(p12: Integer): Integer; inline;
+begin
+  Result := stretchTab[p12];
+end;
+
+procedure BuildTables;
+var x, pi, v, j: Integer;
+begin
+  { the inverse of Squash: for each p, the x whose squash first reaches p }
+  pi := 0;
+  for x := -2047 to 2047 do begin
+    v := Squash(x);
+    for j := pi to v do stretchTab[j] := x;
+    if v + 1 > pi then pi := v + 1;
+  end;
+  for j := pi to 4095 do stretchTab[j] := 2047;
+  for j := 0 to 255 do rateTab[j] := 65536 div (j + 2);
+end;
+
+{ ---------------- coder ---------------- }
+
+procedure TArithEncoder.Init;
+begin
+  x1 := 0; x2 := $FFFFFFFF; d := nil; SetLength(d, 4096); n := 0;
+end;
+
+procedure TArithEncoder.Encode(bit: Integer; p12: Integer);
+var xmid: LongWord;
+begin
+  xmid := x1 + LongWord((QWord(x2 - x1) * LongWord(p12)) shr 12);
+  if bit <> 0 then x2 := xmid else x1 := xmid + 1;
+  while ((x1 xor x2) and $FF000000) = 0 do begin
+    if n >= Length(d) then SetLength(d, Length(d) * 2);
+    d[n] := Byte(x2 shr 24); Inc(n);
+    x1 := LongWord(x1 shl 8);
+    x2 := LongWord(x2 shl 8) or 255;
+  end;
+end;
+
+function TArithEncoder.Finish: TBytes;
+var i: Integer;
+begin
+  { x1's bytes: the decoder reads zeros after them, which stays in range }
+  for i := 0 to 3 do begin
+    if n >= Length(d) then SetLength(d, Length(d) * 2);
+    d[n] := Byte(x1 shr 24); Inc(n);
+    x1 := LongWord(x1 shl 8);
+  end;
+  SetLength(d, n);
+  Result := d;
+end;
+
+procedure TArithDecoder.Init(const data: TBytes; first, len: SizeInt);
+var i: Integer;
+begin
+  if (first < 0) or (len < 0) or (first + len > Length(data)) then
+    raise ERangeError.Create('paiaarith: range outside the data');
+  d := data; p := first; last := first + len;
+  x1 := 0; x2 := $FFFFFFFF; x := 0;
+  for i := 0 to 3 do begin
+    x := LongWord(x shl 8);
+    if p < last then begin x := x or d[p]; Inc(p); end;
+  end;
+end;
+
+function TArithDecoder.Decode(p12: Integer): Integer;
+var xmid: LongWord;
+begin
+  xmid := x1 + LongWord((QWord(x2 - x1) * LongWord(p12)) shr 12);
+  if x <= xmid then begin Result := 1; x2 := xmid; end
+  else begin Result := 0; x1 := xmid + 1; end;
+  while ((x1 xor x2) and $FF000000) = 0 do begin
+    x1 := LongWord(x1 shl 8);
+    x2 := LongWord(x2 shl 8) or 255;
+    x := LongWord(x shl 8);
+    if p < last then begin x := x or d[p]; Inc(p); end;
+  end;
+end;
+
+constructor TCoder.CreateEncoder;
+begin
+  inherited Create;
+  encoding := True;
+  enc.Init;
+end;
+
+constructor TCoder.CreateDecoder(const data: TBytes; first, len: SizeInt);
+begin
+  inherited Create;
+  encoding := False;
+  dec.Init(data, first, len);
+end;
+
+function TCoder.Code(bit: Integer; p12: Integer): Integer; inline;
+begin
+  if p12 < 1 then p12 := 1 else if p12 > 4095 then p12 := 4095;
+  if encoding then begin enc.Encode(bit, p12); Result := bit; end
+  else Result := dec.Decode(p12);
+end;
+
+{ ---------------- counters ---------------- }
+
+procedure TCounters.Init(bits: Integer; aLimit: Integer);
+var i: SizeInt;
+begin
+  p := nil; n := nil;
+  SetLength(p, SizeInt(1) shl bits);
+  SetLength(n, SizeInt(1) shl bits);
+  for i := 0 to High(p) do p[i] := 32768;
+  mask := (SizeInt(1) shl bits) - 1;
+  limit := aLimit;
+end;
+
+function TCounters.P12(i: SizeInt): Integer; inline;
+begin
+  Result := p[i] shr 4;
+end;
+
+procedure TCounters.Update(i: SizeInt; bit: Integer); inline;
+var c: Integer; v: LongInt;
+begin
+  c := n[i];
+  v := p[i];
+  if bit <> 0 then v := v + (((65535 - v) * rateTab[c]) shr 16)
+  else v := v - ((v * rateTab[c]) shr 16);
+  if v < 32 then v := 32 else if v > 65503 then v := 65503;
+  p[i] := v;
+  if c < limit then n[i] := c + 1;
+end;
+
+{ ---------------- mixer ---------------- }
+
+procedure TMixer.Init(inputs, sets, aRate: Integer);
+var i: Integer;
+begin
+  nIn := inputs; nSets := sets; rate := aRate;
+  w := nil; x := nil;
+  SetLength(w, inputs * sets);
+  SetLength(x, inputs);
+  for i := 0 to High(w) do w[i] := 65536 div inputs;
+  k := 0; cur := 0; pr := 2048;
+end;
+
+procedure TMixer.Add(st: Integer); inline;
+begin
+  x[k] := st; Inc(k);
+end;
+
+function TMixer.Mix(ctx: Integer): Integer;
+var i: Integer; dot: Int64;
+begin
+  cur := ctx * nIn;
+  dot := 0;
+  for i := 0 to k - 1 do dot := dot + Int64(x[i]) * w[cur + i];
+  { weights are 16.16: the mixed stretch is dot / 65536 }
+  if dot >= 0 then dot := dot shr 16 else dot := -((-dot) shr 16);
+  if dot > 2047 then dot := 2047 else if dot < -2047 then dot := -2047;
+  pr := Squash(Integer(dot));
+  Result := pr;
+end;
+
+procedure TMixer.Update(bit: Integer);
+var i, err: Integer; v: LongInt;
+begin
+  err := ((bit shl 12) - pr) * rate;
+  for i := 0 to k - 1 do begin
+    v := w[cur + i] + ((x[i] * err) div 1024);
+    if v > 16777216 then v := 16777216 else if v < -16777216 then v := -16777216;
+    w[cur + i] := v;
+  end;
+  k := 0;
+end;
+
+{ ---------------- APM ---------------- }
+
+procedure TApm.Init(contexts: SizeInt; aRate: Integer);
+var i, j: SizeInt;
+begin
+  t := nil;
+  SetLength(t, contexts * 33);
+  for i := 0 to contexts - 1 do
+    for j := 0 to 32 do
+      t[i * 33 + j] := Squash((Integer(j) - 16) * 128) * 16;
+  rate := aRate; idx := 0;
+end;
+
+function TApm.Refine(p12: Integer; ctx: SizeInt): Integer;
+var s, w: Integer;
+begin
+  s := Stretch(p12) + 2048;          { 1 .. 4095 }
+  w := s and 127;
+  idx := ctx * 33 + (s shr 7);
+  Result := (t[idx] * (128 - w) + t[idx + 1] * w) shr 11;
+  if w >= 64 then Inc(idx);          { the nearer bucket learns }
+  if Result < 1 then Result := 1 else if Result > 4095 then Result := 4095;
+end;
+
+procedure TApm.Update(bit: Integer);
+var g: LongInt;
+begin
+  g := (bit shl 16) + (bit shl rate) - bit - bit;
+  t[idx] := t[idx] + ((g - t[idx]) div (LongInt(1) shl rate));
+end;
+
+initialization
+  BuildTables;
+end.
