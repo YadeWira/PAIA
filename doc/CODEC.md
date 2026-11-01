@@ -1,6 +1,8 @@
 # PAIA codec
 
-Status: **proof of concept**, stream version 1, not frozen.
+Status: **proof of concept**, stream version 8. The formats freeze at
+1.0.0, as in the whole family: until then the stream and the container
+may change between versions, with no promise that an older file opens.
 
 ## GIF
 

@@ -5,7 +5,7 @@
     paia t FILE...   test: extract in memory and check
     options: -o DIR  write into DIR;  -f  overwrite;  -q  quiet
 
-  THE .paia FILE (version 1; proof of concept: not frozen)
+  THE .paia FILE (version 1; frozen at PAIA 1.0.0, not before)
     magic      4 B    "PAIA"
     version    1 B    1
     flags      1 B    bit 0: stored (the payload is the original itself)

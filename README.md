@@ -6,9 +6,10 @@
 in FreePascal with C and embedded assembly; no libraries.
 
 > **Status: proof of concept.** GIF, FLI/FLC, ANI, IFF ANIM and WebP work;
-> nothing to download yet. The
-> format is not frozen: no file written by an early build is promised to
-> open later.
+> nothing to download yet. As in the whole family, the formats freeze at
+> 1.0.0: until then the stream and the container may change, and a file
+> made by a 0.x version may not open in a later one; from 1.0.0 on, what
+> is published can be read forever.
 
 ```sh
 paia a anim.gif          # -> anim.paia

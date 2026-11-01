@@ -14,7 +14,7 @@
       (paiavp8),
   all through one arithmetic coder.
 
-  STREAM (version 8; proof of concept: not frozen)
+  STREAM (version 8; frozen at PAIA 1.0.0, not before)
     version   1 B    8
     tables    2 B    log2 of the byte model's and the pixel model's tables
                      (12 to 22: from the sizes, so a small file clears little)
