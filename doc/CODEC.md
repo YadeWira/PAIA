@@ -88,7 +88,8 @@ compared, all 62 coming back the same:
 | PAIA 0.0.1, first version | 12,155,500 | 46.82% |
 | PAIA 0.0.2 (the candidate flag) | 11,855,109 | 45.67% |
 | PAIA 0.0.3 (the canvas) | 11,636,648 | 44.82% |
-| PAIA 0.0.4 (a match model for the plain bytes) | 11,628,335 | **44.79%** |
+| PAIA 0.0.4 (a match model for the plain bytes) | 11,628,335 | 44.79% |
+| PAIA 0.0.10 (learning rates) | 10,921,800 | **42.07%** |
 
 The canvas matters most for optimized animations (frames as small
 rectangles at an offset, with transparency): earthmorph3.gif 58.1% ->
@@ -119,6 +120,17 @@ extracting:
 
 That is 2.6 million pixels a second extracting, 1.0 compressing; 3x and
 3.8x faster than the first version. The Pascal-only build: 29.7 s and 12.6 s.
+
+### Learning rates (0.0.10)
+
+The mixers had kept the rates they were given first. Swept on the 10
+files of the speed set, one setting at a time: the pixel bits' and the
+flag's mixers learning at 1/2^11 instead of 4/2^10 (-5.5%), counters that
+stop slowing down sooner (their rate floors at 1/32 instead of 1/257) and
+faster adaptive probability maps (-1%). 661,669 -> 619,078 bytes (-6.4%).
+On files the sweep did not see: the GIF corpus 44.79% -> 42.07%, the
+optimized GIFs 54.78% -> 52.13%. The C model takes the mixer's shift
+from the Pascal side too, and gives the same bytes.
 
 ## FLI and FLC (`pas/paiafli.pas`)
 

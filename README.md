@@ -14,7 +14,7 @@ paia x anim.paia         # -> anim.gif, the same file byte for byte
 paia t anim.paia         # extract in memory and check
 ```
 
-On the 62 GIF files of the sample corpus: **44.79%** of their size, against
+On the 62 GIF files of the sample corpus: **42.07%** of their size, against
 95.60% for xz -9e and 7-Zip; on its 29 FLI/FLC animations, **32.43%**
 against 46.45%; on its 26 ANI cursors, **8.98%** against 14.69%; on its 14 IFF ANIMs,
 **46.40%** against 52.22%; on 11 animated WebPs, **78.46%** against 88.99%;

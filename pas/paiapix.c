@@ -25,7 +25,7 @@ typedef struct {
 
 typedef struct {
   int32_t *w;
-  int32_t nIn, rate;
+  int32_t nIn, rate, shift, pad;
 } Mixer;
 
 typedef struct {
@@ -124,7 +124,7 @@ static inline void mix_update(const Mixer *m, const int32_t *x, int k, int32_t *
   int32_t err = ((bit << 12) - pr) * m->rate;
   int i;
   for (i = 0; i < k; i++) {
-    int32_t v = w[i] + ((x[i] * err) >> 10);
+    int32_t v = w[i] + ((x[i] * err) >> m->shift);
     if (v > 16777216) v = 16777216; else if (v < -16777216) v = -16777216;
     w[i] = v;
   }

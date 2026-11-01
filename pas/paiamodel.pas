@@ -97,7 +97,7 @@ implementation
 {$packrecords C}
 type
   TCCounters = record e: PLongWord; mask: Int64; limit, pad: LongInt; end;
-  TCMixer = record w: PLongInt; nIn, rate: LongInt; end;
+  TCMixer = record w: PLongInt; nIn, rate, shift, pad: LongInt; end;
   TCApm = record t: PLongInt; rate, pad: LongInt; end;
   TPixState = record
     t: array[0..PIXEL_CONTEXTS - 1] of TCCounters;
@@ -218,13 +218,13 @@ constructor TPixelModel.Create(tableBits: Integer);
 var i: Integer;
 begin
   inherited Create;
-  for i := 0 to High(t) do t[i].Init(tableBits, 255);
-  mx.Init(Length(t) + 1, 8 * 8, 4);
-  apm1.Init(256 * 256, 7);
-  apm2.Init(256 * 256, 7);
-  for i := 0 to High(ft) do ft[i].Init(tableBits - 2, 255);
-  fmx.Init(FLAG_CONTEXTS + 1, 16 * 4, 4);
-  fapm.Init(1024 * 16, 7);
+  for i := 0 to High(t) do t[i].Init(tableBits, 30);
+  mx.Init(Length(t) + 1, 8 * 8, 1, 11);
+  apm1.Init(256 * 256, 6);
+  apm2.Init(256 * 256, 6);
+  for i := 0 to High(ft) do ft[i].Init(tableBits - 2, 30);
+  fmx.Init(FLAG_CONTEXTS + 1, 16 * 4, 1, 11);
+  fapm.Init(1024 * 16, 6);
 end;
 
 procedure TPixelModel.CodeImage(cd: TCoder; var px: TBytes; n: SizeInt; width, bits: Integer;
@@ -240,8 +240,8 @@ begin
   st := Default(TPixState);
   for j := 0 to High(t) do C(st.t[j], t[j]);
   for j := 0 to High(ft) do C(st.ft[j], ft[j]);
-  st.mx.w := @mx.w[0]; st.mx.nIn := mx.nIn; st.mx.rate := mx.rate;
-  st.fmx.w := @fmx.w[0]; st.fmx.nIn := fmx.nIn; st.fmx.rate := fmx.rate;
+  st.mx.w := @mx.w[0]; st.mx.nIn := mx.nIn; st.mx.rate := mx.rate; st.mx.shift := mx.shift;
+  st.fmx.w := @fmx.w[0]; st.fmx.nIn := fmx.nIn; st.fmx.rate := fmx.rate; st.fmx.shift := fmx.shift;
   st.apm1.t := @apm1.t[0]; st.apm1.rate := apm1.rate;
   st.apm2.t := @apm2.t[0]; st.apm2.rate := apm2.rate;
   st.fapm.t := @fapm.t[0]; st.fapm.rate := fapm.rate;
