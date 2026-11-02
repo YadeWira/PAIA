@@ -15,7 +15,8 @@
     decodes every block and compares before writing it. decompress() is
     paiacodec.Decompress with zpaq-std's exact original size as the cap.
   - zpaqstd_detect_v1: 1 if the codec named takes the file, from its bytes
-    only: the format's header at its start, and something of it that PAIA
+    only: the format's header at its start (a GIF's within the first 4 KB:
+    after a MacBinary header, say), and something of it that PAIA
     takes (GIF images, FLIC pixel chunks, ANI bitmaps, IFF ANIM frames,
     WebP VP8 or VP8L streams). Never reads outside the file; any error is
     a no.
@@ -122,6 +123,17 @@ begin
   end;
 end;
 
+function HasGifSignature(const d: TBytes): Boolean;
+var p, last: SizeInt;
+begin
+  Result := False;
+  last := Length(d) - 13;
+  if last > 4096 then last := 4096;
+  for p := 0 to last do
+    if (d[p] = Ord('G')) and (d[p + 1] = Ord('I')) and (d[p + 2] = Ord('F')) and (d[p + 3] = Ord('8'))
+       and ((d[p + 4] = Ord('7')) or (d[p + 4] = Ord('9'))) and (d[p + 5] = Ord('a')) then Exit(True);
+end;
+
 { Whether the bytes start as the format does, and PAIA takes something of
   it. The Find* functions check every length against the data. }
 function Takes(fmt: Integer; const d: TBytes): Boolean;
@@ -129,8 +141,9 @@ begin
   Result := False;
   case fmt of
     F_GIF:
-      Result := (Length(d) >= 13) and (d[0] = Ord('G')) and (d[1] = Ord('I')) and (d[2] = Ord('F'))
-        and (Length(FindGifImages(d)) > 0);
+      { a GIF's signature at the start, or after a header (MacBinary's 128
+        bytes, or another one) within the first 4 KB }
+      Result := HasGifSignature(d) and (Length(FindGifImages(d)) > 0);
     F_FLC:
       Result := (Length(d) >= 128) and (Length(FindFliChunks(d)) > 0);
     F_ANI:

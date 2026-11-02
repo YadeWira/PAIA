@@ -11,7 +11,8 @@ zpaq-std a test.zpaq files -sat:paia:paiagif:paiaflc:paiaani:paiaanim:paiawebp
 ```
 
 One codec a format, each taking a file by its bytes (the format's header,
-and something PAIA takes in it): `paiagif`, `paiaflc` (FLI and FLC),
+a GIF's within the first 4 KB, after a MacBinary header for instance, and
+something PAIA takes in it): `paiagif`, `paiaflc` (FLI and FLC),
 `paiaani`, `paiaanim` (IFF ANIM), `paiawebp`. Their stream is PAIA's codec
 stream (version 8), which keeps every byte of the block zpaq-std hands
 over, the list of fragments after the file included. zpaq-std decodes
