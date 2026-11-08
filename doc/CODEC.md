@@ -1,6 +1,6 @@
 # PAIA codec
 
-Status: **proof of concept**, stream version 8 (written since 0.1.0, and
+Stream version 8 (written since 0.1.0, and
 read forever: [STABILITY.md](STABILITY.md)).
 
 ## GIF
