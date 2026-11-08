@@ -39,7 +39,7 @@ streams, VP8 frames).
 Exit status: 0 if every file went well, 1 if any failed, 2 for a wrong
 command line.
 
-**Compatibility:** until PAIA 1.0.0 the format may change between
-versions: a `.paia` made by a 0.x version may not open in a later one
-(it is refused, as an unknown version, rather than misread). From 1.0.0
-on, every `.paia` will open in every later version.
+**Compatibility:** every `.paia` a release has written opens in every
+later version ([STABILITY.md](STABILITY.md)); a version refuses, as
+"unknown stream version", a stream written by a later one that it does
+not know, rather than misreading it.

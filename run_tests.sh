@@ -44,4 +44,14 @@ for f in "$HERE"/tests/gif/* "$HERE"/tests/fli/* "$HERE"/tests/ani/* "$HERE"/tes
   fi
 done
 echo "  $n samples"
+echo "== files written by 0.1.0"
+for p in "$HERE"/tests/paia010/*/*.paia; do
+  d=$(basename "$(dirname "$p")")
+  rm -rf "$T/old"; mkdir -p "$T/old"
+  "$B/paia-checked" x -q -f -o "$T/old" "$p" || { echo "  $p: does not extract"; fail=1; continue; }
+  for f in "$T"/old/*; do
+    cmp -s "$f" "$HERE/tests/$d/$(basename "$f")" || { echo "  $p: not the sample"; fail=1; }
+  done
+done
+echo "  $(ls "$HERE"/tests/paia010/*/*.paia | wc -l) files of 0.1.0 extracted"
 [ $fail = 0 ] && echo "all green" || { echo "FAILED"; exit 1; }

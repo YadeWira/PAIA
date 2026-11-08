@@ -44,7 +44,7 @@ echo "== every sample: compressed three ways, extracted, compared"
 n=0
 for dir in tests/*/; do
   d=$(basename "$dir")
-  [ "$d" = tools ] && continue
+  case "$d" in tools|paia010) continue ;; esac
   for f in "$dir"*; do
     [ -f "$f" ] || continue
     case "$f" in *.md) continue ;; esac
@@ -65,6 +65,21 @@ for dir in tests/*/; do
 done
 [ "$n" -ge 30 ] || { echo "FAIL: only $n samples"; exit 1; }
 echo "$n samples: the same .paia three ways, and back byte for byte"
+
+echo "== files written by 0.1.0, extracted by this version"
+m=0
+for p in tests/paia010/*/*.paia; do
+  d=$(basename "$(dirname "$p")")
+  mkdir -p "$OUT/old/$d"
+  "$OUT/paia$EXE" x -q -f -o "$OUT/old/$d" "$p" || { echo "FAIL: 0.1.0's $p does not extract"; exit 1; }
+  for f in "$OUT/old/$d"/*; do
+    cmp -s "$f" "tests/$d/$(basename "$f")" || { echo "FAIL: 0.1.0's $p: not the sample"; exit 1; }
+    m=$((m + 1))
+  done
+  rm -f "$OUT/old/$d"/*
+done
+[ "$m" -ge 9 ] || { echo "FAIL: only $m files of 0.1.0"; exit 1; }
+echo "$m files written by 0.1.0: extracted byte for byte"
 
 echo "== the streams"
 (cd "$OUT/p/paia" && for f in */*.paia; do $SHA "$f"; done | sed 's/ [ *]/  /' | sort) > "$OUT/streams.txt"

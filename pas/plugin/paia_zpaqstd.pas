@@ -6,8 +6,12 @@
 
   Exported C functions:
   - zpaqstd_codecs_v1(i): one codec a format, so that each can later carry
-    a ZPAQL decoder of its format alone: paiagif (0), paiaflc (1), paiaani
-    (2), paiaanim (3), paiawebp (4). zpaqstd_codec_v1 is paiagif.
+    a ZPAQL decoder of its format alone: paiagif1 (0), paiaflc1 (1),
+    paiaani1 (2), paiaanim1 (3), paiawebp1 (4). zpaqstd_codec_v1 is
+    paiagif1. The names are versioned (the family's rule): a new stream, or
+    another ZPAQL decoder, is a new name (paiagif2...), never a change to
+    one; and no name ends in z, o or 8, which zpaq-std reads as other
+    families'.
     compress() gets a file's block (the file, and zpaq-std's list of
     fragments after it) and gives back PAIA's codec stream
     (paiacodec.Compress), which keeps every byte, whatever follows the
@@ -159,11 +163,11 @@ end;
 
 function FormatOf(const name: AnsiString): Integer;
 begin
-  if name = 'paiagif' then Result := F_GIF
-  else if name = 'paiaflc' then Result := F_FLC
-  else if name = 'paiaani' then Result := F_ANI
-  else if name = 'paiaanim' then Result := F_ANIM
-  else if name = 'paiawebp' then Result := F_WEBP
+  if name = 'paiagif1' then Result := F_GIF
+  else if name = 'paiaflc1' then Result := F_FLC
+  else if name = 'paiaani1' then Result := F_ANI
+  else if name = 'paiaanim1' then Result := F_ANIM
+  else if name = 'paiawebp1' then Result := F_WEBP
   else Result := -1;
 end;
 
@@ -222,15 +226,15 @@ begin Result := DataOf(F_WEBP, what, size); end;
 const
   LIB = STREAM + ' (YadeWira/PAIA)';
   Codecs: array[0..4] of TZsCodec = (
-    (abi: ZS_CODEC_ABI; name: 'paiagif'; library_: LIB; min_level: LEVEL; max_level: LEVEL;
+    (abi: ZS_CODEC_ABI; name: 'paiagif1'; library_: LIB; min_level: LEVEL; max_level: LEVEL;
      bound: @CodecBound; compress_: @CodecCompress; decompress_: @CodecDecompress; query: nil; data: @DataGif),
-    (abi: ZS_CODEC_ABI; name: 'paiaflc'; library_: LIB; min_level: LEVEL; max_level: LEVEL;
+    (abi: ZS_CODEC_ABI; name: 'paiaflc1'; library_: LIB; min_level: LEVEL; max_level: LEVEL;
      bound: @CodecBound; compress_: @CodecCompress; decompress_: @CodecDecompress; query: nil; data: @DataFlc),
-    (abi: ZS_CODEC_ABI; name: 'paiaani'; library_: LIB; min_level: LEVEL; max_level: LEVEL;
+    (abi: ZS_CODEC_ABI; name: 'paiaani1'; library_: LIB; min_level: LEVEL; max_level: LEVEL;
      bound: @CodecBound; compress_: @CodecCompress; decompress_: @CodecDecompress; query: nil; data: @DataAni),
-    (abi: ZS_CODEC_ABI; name: 'paiaanim'; library_: LIB; min_level: LEVEL; max_level: LEVEL;
+    (abi: ZS_CODEC_ABI; name: 'paiaanim1'; library_: LIB; min_level: LEVEL; max_level: LEVEL;
      bound: @CodecBound; compress_: @CodecCompress; decompress_: @CodecDecompress; query: nil; data: @DataAnim),
-    (abi: ZS_CODEC_ABI; name: 'paiawebp'; library_: LIB; min_level: LEVEL; max_level: LEVEL;
+    (abi: ZS_CODEC_ABI; name: 'paiawebp1'; library_: LIB; min_level: LEVEL; max_level: LEVEL;
      bound: @CodecBound; compress_: @CodecCompress; decompress_: @CodecDecompress; query: nil; data: @DataWebp));
 
 function zpaqstd_codec_v1: PZsCodec; cdecl;
@@ -260,9 +264,9 @@ exports
 
 begin
   IsMultiThread := True;
-  Info[F_GIF] := Card('paiagif', 'GIF');
-  Info[F_FLC] := Card('paiaflc', 'FLI and FLC');
-  Info[F_ANI] := Card('paiaani', 'ANI (animated cursors)');
-  Info[F_ANIM] := Card('paiaanim', 'IFF ANIM');
-  Info[F_WEBP] := Card('paiawebp', 'WebP (VP8, VP8L, lossless alpha)');
+  Info[F_GIF] := Card('paiagif1', 'GIF');
+  Info[F_FLC] := Card('paiaflc1', 'FLI and FLC');
+  Info[F_ANI] := Card('paiaani1', 'ANI (animated cursors)');
+  Info[F_ANIM] := Card('paiaanim1', 'IFF ANIM');
+  Info[F_WEBP] := Card('paiawebp1', 'WebP (VP8, VP8L, lossless alpha)');
 end.

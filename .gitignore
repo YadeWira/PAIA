@@ -9,3 +9,4 @@ hash.txt
 hash.txt
 credenciales.md
 handoff.md
+!tests/paia010/*/*.paia
