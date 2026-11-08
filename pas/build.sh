@@ -5,6 +5,9 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE"
 mkdir -p build/checked build/fast build/pure
+# the commit the command names in --version and report ('' without git)
+PAIA_COMMIT=${PAIA_COMMIT:-$(git rev-parse --short=7 HEAD 2>/dev/null || true)}
+export PAIA_COMMIT
 rm -f build/paia build/paia-checked build/paia-pure
 # the C model (the release build only): no library, no runtime
 sh ./build_c.sh build/fast

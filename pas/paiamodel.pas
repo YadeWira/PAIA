@@ -81,6 +81,13 @@ type
 { True when the C model is linked in (the release build); the checked build
   is Pascal only, and the tests compare the two. }
 function UsingC: Boolean;
+{ the C compiler that built the C model, as it names itself ('' without C) }
+function CCompilerName: string;
+
+var
+  { the C model where it is linked in, or the Pascal one (--cpu=pascal):
+    the same bytes. Set before any work starts. }
+  UseCModel: Boolean = True;
 
 { The table size for a model that will see about `symbols` symbols:
   enough slots for two per symbol, between 2^12 and 2^22 counters. }
@@ -125,11 +132,17 @@ procedure paia_code_pixels(s: Pointer; cd: Pointer; px: PByte; i0, i1, n, width:
                            bits: LongInt; cv, pw: PWord; transp: LongInt; r: Pointer;
                            x0, y0: Int64);
   cdecl; external;
+function paia_c_compiler: PChar; cdecl; external;
 {$endif}
 
 function UsingC: Boolean;
 begin
   {$ifdef PAIA_C} Result := True; {$else} Result := False; {$endif}
+end;
+
+function CCompilerName: string;
+begin
+  {$ifdef PAIA_C} Result := StrPas(paia_c_compiler); {$else} Result := ''; {$endif}
 end;
 
 { 32-bit mixing of a value, without overflow traps }
@@ -238,6 +251,10 @@ var st: TPixState; cs: TCState; j: Integer; i0, i1, need: Int64; r: TCRun; pcv, 
   procedure C(var c: TCCounters; const t: TCounters);
   begin c.e := @t.e[0]; c.mask := t.mask; c.limit := t.limit; c.pad := 0; end;
 begin
+  if not UseCModel then begin
+    CodeImagePascal(cd, px, n, width, bits, cv, pw, transp);
+    Exit;
+  end;
   if width < 1 then width := 1;
   if n <= 0 then Exit;
   st := Default(TPixState);

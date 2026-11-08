@@ -17,6 +17,10 @@ if command -v sha256sum > /dev/null; then SHA="sha256sum"; else SHA="shasum -a 2
 rm -rf "$OUT"; mkdir -p "$OUT/c" "$OUT/uf" "$OUT/up" "$OUT/uk"
 
 echo "== build"
+# the commit the command names in --version and report (release.yml sets
+# it; '' where there is no git)
+PAIA_COMMIT=${PAIA_COMMIT:-$(git rev-parse --short=7 HEAD 2>/dev/null || true)}
+export PAIA_COMMIT
 # A C compiler given by its full path (MSYS2's MinGW-w64 on Windows) needs its
 # own folder on PATH for its DLLs and its cc1/as; without it, it fails
 # without a word.
@@ -35,6 +39,12 @@ build paia-checked uk -O2
 "$OUT/paia$EXE" --version
 $FPC -O2 -Fupas -Fipas -FU"$OUT/uk" -o"$OUT/test_blake3$EXE" pas/tests/test_blake3.pas > "$OUT/fpc.log" 2>&1 \
   || { cat "$OUT/fpc.log"; echo "FAIL: test_blake3 did not build"; exit 1; }
+
+echo "== selftest: the samples inside each binary, on every path it has"
+for v in paia paia-pure paia-checked; do
+  "$OUT/$v$EXE" selftest -q > "$OUT/selftest.log" 2>&1 || { cat "$OUT/selftest.log"; echo "FAIL: $v selftest"; exit 1; }
+  echo "$v: $(tail -1 "$OUT/selftest.log")"
+done
 
 echo "== BLAKE3"
 "$OUT/test_blake3$EXE" pas/tests/kat.txt > "$OUT/blake3.txt" || { cat "$OUT/blake3.txt"; echo "FAIL: BLAKE3"; exit 1; }

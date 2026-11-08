@@ -1,241 +1,1306 @@
-{ paia: the command.
+{ The paia command: animated images (GIF, FLI/FLC, ANI, IFF ANIM, WebP) to
+  .paia and back. doc/CLI.md has the switches and the reasons behind them.
+  From PJA's pjacli (the same family, author and licence).
 
-    paia a FILE...   compress each FILE into FILE's name with .paia
-    paia x FILE...   extract each .paia into its name with the original's extension
-    paia t FILE...   test: extract in memory and check
-    options: -o DIR  write into DIR;  -f  overwrite;  -q  quiet
+    paia a [options] FILE...     compress: anim.gif -> anim.paia
+    paia x [options] FILE...     extract:  anim.paia -> anim.gif (the extension it had)
+    paia list FILE...            what each .paia holds
+    paia t FILE...               test: extract and verify, write nothing
+    paia info FILE...            the structure of each file, and what PAIA does with it
+    paia report [FILE]           a bug report, and a link to open an issue with it
+    paia bench FILE...           how fast this machine compresses and extracts them
+    paia selftest                the samples inside the binary, on every path of the model
+    paia --version               the build, the system and the model's path
 
-  THE .paia FILE (version 1, since 0.1.0: read forever, doc/STABILITY.md)
-    magic      4 B    "PAIA"
-    version    1 B    1
-    flags      1 B    bit 0: stored (the payload is the original itself)
-    reserved   2 B    0
-    orig_size  u64 LE
-    hash       16 B   BLAKE3-128 of the original
-    ext_len    1 B    0 to 15
-    ext        ext_len bytes: letters, digits, '_' and '-'
-    payload    the rest: the codec stream (paiacodec), or the original
+  THE .paia FILE (version 1, since 0.1.0: read forever, doc/STABILITY.md;
+  paiaformat): "PAIA", version 1, flags (bit 0: stored), 2 reserved bytes,
+  the original's size (u64 LE), its BLAKE3-128, its extension (0 to 15
+  bytes after a length byte), then the codec stream (paiacodec) or the
+  original itself.
 
-  Nothing is written unless it verified: compressing decompresses the
-  stream and compares it with the input (if it does not come back, or is
-  not smaller, the original is stored); extracting checks the size and the
-  hash before writing. }
+  Nothing is written under an output's name unless it verified: `a` checks
+  that its stream decompresses to the input, `x` that the size and the hash
+  match. An existing output is only replaced with -f. }
 program paiacli;
 
 {$I paia.inc}
+{$ifopt R-}{$fatal paiacli: range checks ($R+) are mandatory}{$endif}
+{$ifopt Q-}{$fatal paiacli: overflow checks ($Q+) are mandatory}{$endif}
 
-uses SysUtils, Classes, paiablake3, paiacodec;
+uses
+  {$ifdef UNIX} cthreads, BaseUnix, {$endif}
+  {$ifdef MSWINDOWS} Windows, {$endif}
+  SysUtils, Classes, paiablake3, paiaformat, paiacodec, paiapack, paiafs, paiathread,
+  { the commands for reporting and checking (doc/CLI.md); each format's
+    info provider registers itself }
+  paiastage, paiainfo, paiainfoimg, paiasysinfo, paiareport, paiabench, paiaselftest;
 
 const
-  PAIA_VERSION = '0.1.0';
-  MAGIC: array[0..3] of Char = ('P', 'A', 'I', 'A');
-  FORMAT_VERSION = 1;
-  FLAG_STORED = 1;
-  HEADER = 8 + 8 + 16 + 1;
+  DEFAULT_MAX_OUTPUT = 256 * 1024 * 1024;
+  { the largest input read whole into memory }
+  MAX_INPUT = QWord(1) shl 31;
+
+type
+  TCommand = (cmNone, cmCompress, cmExtract, cmList, cmTest, cmInfo, cmReport, cmBench, cmSelftest);
 
 var
-  outDir: string = '';
-  force: Boolean = False;
-  quiet: Boolean = False;
+  command: TCommand;
+  inputs: TStringList;
+  outArg: string;          { -o: a name, or a directory }
+  outDir: string;          { --output-dir }
+  force, keepCorrupt, dryRun, quiet, noVerify, cleanTemps: Boolean;
+  threads: Integer;
+  { --stats, --json; report's --with-file; bench's -r }
+  stats, jsonOut, withFile: Boolean;
+  runs: Integer;
+  runsGiven: Boolean;
+  { -th or --threads given }
+  thGiven: Boolean;
+  { --cpu }
+  cpuGiven: Boolean;
+  cpuWanted: TCpuPath;
+  { files that met a bug (an exception that is not about the file) }
+  bugs: Integer;
+  bugFile: string;
+  maxOutput: QWord;
+  errors: Integer;
 
-function ReadAll(const name: string): TBytes;
-var f: TFileStream;
-begin
-  Result := nil;
-  f := TFileStream.Create(name, fmOpenRead or fmShareDenyWrite);
-  try
-    SetLength(Result, f.Size);
-    if Length(Result) > 0 then f.ReadBuffer(Result[0], Length(Result));
-  finally
-    f.Free;
+type
+  { One input: what it printed and whether it failed. Files are processed
+    in parallel, and their lines come out in the order of the inputs. }
+  TFileJob = record
+    name, outText, errText: string;
+    index: Integer;
+    failed, done: Boolean;
+    { an exception that is a bug in PAIA, not something about the file }
+    bug: Boolean;
+    { --json: the object of this file; errors: what failed, for it }
+    node: TInfoNode;
+    errors: string;
+    { the bytes read and written (the summary of --stats and --json) }
+    inBytes, outBytes: Int64;
+    { the input's size when the files were ordered (0: not looked at) }
+    size: Int64;
+    { its output handed to the committer (Defer): the job ends there }
+    deferred: Boolean;
   end;
+  PFileJob = ^TFileJob;
+
+threadvar
+  CurJob: PFileJob;
+
+var
+  jobs: array of TFileJob;
+
+var
+  { the arguments, in UTF-8 on every system }
+  args: array of string;
+
+{$ifdef MSWINDOWS}
+function CommandLineToArgvW(cmd: PWideChar; out n: Integer): PPWideChar; stdcall; external 'shell32.dll';
+
+{ ParamStr goes through the ANSI code page on Windows, and a name like
+  "animación.gif" does not survive it: the arguments are read in UTF-16
+  and kept in UTF-8, the code page the whole program then runs in (so the
+  RTL's file functions and paiafs open the right file). }
+procedure ReadArgs;
+var w: PPWideChar; n, i: Integer;
+begin
+  DefaultSystemCodePage := CP_UTF8;
+  DefaultFileSystemCodePage := CP_UTF8;
+  w := CommandLineToArgvW(GetCommandLineW, n);
+  args := nil;
+  SetLength(args, n);
+  for i := 0 to n - 1 do args[i] := UTF8Encode(UnicodeString(w[i]));
+  LocalFree(HLOCAL(w));
+end;
+{ cmd passes a pattern such as *.gif as it is (Windows leaves that to each
+  program): an input with * or ? in its name becomes the files that match,
+  in order of name; the folder part is taken as written. A pattern that
+  matches nothing stays, and fails as such (ReadWhole). }
+procedure ExpandWildcards;
+var all, found: TStringList; i: Integer; a, dir: string; sr: TUnicodeSearchRec;
+begin
+  all := TStringList.Create;
+  found := TStringList.Create;
+  for i := 0 to inputs.Count - 1 do begin
+    a := inputs[i];
+    if LastDelimiter('*?', a) <= LastDelimiter('\/:', a) then begin all.Add(a); Continue; end;
+    dir := Copy(a, 1, LastDelimiter('\/:', a));
+    found.Clear;
+    if FindFirst(UnicodeString(UTF8Decode(a)), faAnyFile, sr) = 0 then begin
+      repeat
+        if sr.Attr and faDirectory = 0 then found.Add(dir + UTF8Encode(sr.Name));
+      until FindNext(sr) <> 0;
+      FindClose(sr);
+    end;
+    if found.Count = 0 then all.Add(a)
+    else begin
+      found.Sort;
+      all.AddStrings(found);
+    end;
+  end;
+  found.Free;
+  inputs.Free;
+  inputs := all;
+end;
+{$else}
+procedure ReadArgs;
+var i: Integer;
+begin
+  args := nil;
+  SetLength(args, ParamCount + 1);
+  for i := 0 to ParamCount do args[i] := ParamStr(i);
+end;
+{$endif}
+
+function ArgCount: Integer;
+begin Result := High(args); end;
+
+procedure Fail(const msg: string);
+begin
+  CurJob^.failed := True;
+  CurJob^.errText := CurJob^.errText + 'paia: ' + msg + LineEnding;
+  if CurJob^.errors <> '' then CurJob^.errors := CurJob^.errors + '; ';
+  CurJob^.errors := CurJob^.errors + msg;
 end;
 
-{ Written to a temporary name, then renamed: never a half file under the
-  final name. }
-procedure WriteAll(const name: string; const d: TBytes);
-var f: TFileStream; tmp: string;
+{ a line for people: --json prints the file's object instead }
+procedure Say(const line: string);
 begin
-  if FileExists(name) and not force then
-    raise Exception.Create(name + ': exists (use -f to overwrite)');
-  tmp := name + '.tmp' + IntToStr(GetProcessID);
-  f := TFileStream.Create(tmp, fmCreate);
-  try
-    if Length(d) > 0 then f.WriteBuffer(d[0], Length(d));
-  finally
-    f.Free;
-  end;
-  if FileExists(name) then DeleteFile(name);
-  if not RenameFile(tmp, name) then
-    raise Exception.Create(name + ': cannot rename the temporary file');
+  if jsonOut then Exit;
+  CurJob^.outText := CurJob^.outText + line + LineEnding;
 end;
 
-function ValidExt(const e: string): Boolean;
-var c: Char;
+{ a field of the file's --json object }
+function JobNode: TInfoNode;
 begin
-  if Length(e) > 15 then Exit(False);
-  for c in e do
-    if not (c in ['a'..'z', 'A'..'Z', '0'..'9', '_', '-']) then Exit(False);
+  Result := CurJob^.node;
+end;
+
+{ an exception about the file or the system (a read, a write, memory),
+  not a bug in PAIA }
+function NotABug(e: Exception): Boolean;
+begin
+  Result := (e is EInOutError) or (e is EStreamError) or (e is EOSError) or (e is EOutOfMemory);
+end;
+
+{ What could not be written to the output (a full disk, a closed pipe):
+  said once, and what is still in the buffer dropped, or the RTL would
+  fail on it again at the end with a runtime error }
+procedure OutputFailed(const why: string);
+begin
+  TextRec(Output).BufPos := 0;
+  InOutRes := 0;
+  Writeln(StdErr, 'paia: could not write the output: ', why);
+end;
+
+{ The end: the output flushed first, so that a write that fails says so
+  and ends with 1 (not a bug, and not 0) }
+procedure Finish(code: Integer);
+begin
+  try
+    Flush(Output);
+  except
+    on e: Exception do begin
+      OutputFailed(e.Message);
+      if code = 0 then code := 1;
+    end;
+  end;
+  Halt(code);
+end;
+
+procedure Usage(code: Integer);
+begin
+  Writeln('paia ', PAIA_VERSION, ' - lossless recompression of animated images: GIF, FLI/FLC, ANI, IFF ANIM, WebP');
+  Writeln;
+  Writeln('usage: paia a [options] FILE...     compress to .paia');
+  Writeln('       paia x [options] FILE...     extract from .paia');
+  Writeln('       paia list FILE...            show what each .paia holds');
+  Writeln('       paia t FILE...               test each .paia: extract and verify, write nothing');
+  Writeln('       paia info FILE...            the structure of each file, and what PAIA does with it');
+  Writeln('       paia report [FILE] [-o REPORT.txt] [--with-file]');
+  Writeln('                                   a bug report (no pixels, no metadata contents) and');
+  Writeln('                                   a link to open an issue with it');
+  Writeln('       paia bench FILE... [-r N]    time a, a --no-verify and x (best of N runs)');
+  Writeln('       paia selftest                the samples inside paia, on every path of the model here');
+  Writeln('       paia --version, -V           the build, the system and the model''s path');
+  Writeln;
+  Writeln('  -o PATH              output name (one input), or directory (ends in / or exists)');
+  Writeln('  --output-dir=DIR     output directory');
+  Writeln('  -f, --force          replace an existing output (only with something that verified)');
+  Writeln('  -th N, --threads=N   threads (default: the processors, up to 8): several files at once');
+  Writeln('  --max-output=SIZE    x: refuse a declared original above SIZE (256M; 0 = no limit)');
+  Writeln('  --keep-corrupt       x: keep output that does not verify as NAME.corrupt');
+  Writeln('  --no-verify          a: do not decompress the stream to check it before writing:');
+  Writeln('                       about twice as fast, but a codec bug would only show when');
+  Writeln('                       extracting (the hash catches it then)');
+  Writeln('  --no-sync            do not wait for each output to reach the disk: a few');
+  Writeln('                       percent faster, but a power cut may leave it empty');
+  Writeln('  --clean-temps        delete the temporaries an interrupted run left where');
+  Writeln('                       this one writes (only PAIA''s, old, of no live process)');
+  Writeln('  -n, --dry-run        do everything but write');
+  Writeln('  -q, --quiet          only errors');
+  Writeln('  --stats              a, x, t: where each file''s time went');
+  Writeln('  --json               a, x, t, info, list: a JSON object per file, then a summary');
+  Writeln('  -r N                 bench: runs of each, the best counts (default 3)');
+  Writeln('  --cpu=PATH           the model''s path: pascal or c (same output)');
+  Writeln('  --                   the rest are files');
+  Writeln;
+  Writeln('exit status: 0 all went through, 1 a file failed, 2 usage error, 3 a bug in PAIA');
+  Writeln('bugs: paia report FILE, then ', ISSUES_URL);
+  Finish(code);
+end;
+
+procedure UsageError(const msg: string);
+begin
+  Writeln(StdErr, 'paia: ', msg);
+  Writeln(StdErr, 'paia: see paia --help');
+  Halt(2);
+end;
+
+{ "256M", "1G", "1000K", "12345"; False if it is none of those }
+function ParseSize(s: string; out v: QWord): Boolean;
+var mult: QWord; n: QWord; c: Char;
+begin
+  Result := False;
+  if s = '' then Exit;
+  mult := 1;
+  c := UpCase(s[Length(s)]);
+  case c of
+    'K': mult := QWord(1) shl 10;
+    'M': mult := QWord(1) shl 20;
+    'G': mult := QWord(1) shl 30;
+  end;
+  if mult > 1 then Delete(s, Length(s), 1);
+  if not TryStrToQWord(s, n) then Exit;
+  if (n > 0) and (n > High(QWord) div mult) then Exit;
+  v := n * mult;
   Result := True;
 end;
 
-function SameHash(const a, b: THash16): Boolean;
+{ where the command is among the arguments (past a leading --cpu) }
+function CommandIndex: Integer;
 begin
-  Result := CompareMem(@a[0], @b[0], 16);
+  Result := 1;
+  while (Result < ArgCount) and (Copy(args[Result], 1, 6) = '--cpu=') do Inc(Result);
 end;
 
-{ ---------------- pack / unpack ---------------- }
-
-function Pack(const d: TBytes; const ext: string; out stats: TCodecStats;
-              out stored: Boolean): TBytes;
-var s, back: TBytes; h: THash16; e: string; o, i: SizeInt;
+{ --cpu: the path asked for, or a usage error if this processor (or this
+  build) does not have it }
+procedure ApplyCpu;
 begin
-  h := Blake3_128(d);
-  e := ext; if not ValidExt(e) then e := '';
-  stored := True;
-  stats := Default(TCodecStats);
-  s := nil;
+  if not cpuGiven then Exit;
+  if not SetCpuPath(cpuWanted) then
+    UsageError('--cpu=' + CPU_PATH_NAMES[cpuWanted] + ': this processor or this build does not have it; it has: ' +
+               SupportedPaths);
+end;
+
+{ "--cpu c": the value goes after an equals sign (next: where it is) }
+procedure CpuSpaced(next: Integer);
+begin
+  if next <= ArgCount then UsageError('"--cpu ' + args[next] + '": write --cpu=' + args[next])
+  else UsageError('--cpu needs a path: --cpu=pascal or --cpu=c');
+end;
+
+procedure ParseArgs;
+var i: Integer; a, v: string; n: Integer; onlyFiles: Boolean;
+
+  function NextValue: string;
+  begin
+    if i >= ArgCount then UsageError(a + ' needs a value');
+    Inc(i);
+    Result := args[i];
+  end;
+
+begin
+  command := cmNone; inputs := TStringList.Create;
+  outArg := ''; outDir := ''; force := False; keepCorrupt := False; dryRun := False; quiet := False;
+  noVerify := False; cleanTemps := False;
+  stats := False; jsonOut := False; withFile := False; runs := 3; runsGiven := False; thGiven := False;
+  cpuGiven := False;
+  threads := DefaultThreads;
+  maxOutput := DEFAULT_MAX_OUTPUT;
+  ReadArgs;
+  if ArgCount = 0 then Usage(2);
+  { --cpu may come before the command too }
+  i := 1;
+  while (i < ArgCount) and (Copy(args[i], 1, 6) = '--cpu=') do begin
+    if not ParseCpuPath(Copy(args[i], 7, MaxInt), cpuWanted) then
+      UsageError('--cpu: pascal or c, not "' + Copy(args[i], 7, MaxInt) + '"');
+    cpuGiven := True;
+    Inc(i);
+  end;
+  a := args[i];
+  if a = '--cpu' then CpuSpaced(i + 1);
+  if (a = '-h') or (a = '--help') then Usage(0);
+  if (a = '--version') or (a = '-V') then begin
+    ApplyCpu;
+    Writeln('paia ', PAIA_VERSION);
+    Write(SystemText(False));
+    Finish(0);
+  end;
+  if a = 'a' then command := cmCompress
+  else if a = 'x' then command := cmExtract
+  else if a = 'list' then command := cmList
+  else if a = 't' then command := cmTest
+  else if a = 'info' then command := cmInfo
+  else if a = 'report' then command := cmReport
+  else if a = 'bench' then command := cmBench
+  else if a = 'selftest' then command := cmSelftest
+  else UsageError('unknown command "' + a + '": a, x, list, t, info, report, bench or selftest');
+  onlyFiles := False;
+  i := i + 1;
+  while i <= ArgCount do begin
+    a := args[i];
+    if onlyFiles or (a = '') or (a[1] <> '-') or (a = '-') then inputs.Add(a)
+    else if a = '--' then onlyFiles := True
+    else if a = '--cpu' then CpuSpaced(i + 1)
+    else if (a = '-h') or (a = '--help') then Usage(0)
+    else if a = '-o' then outArg := NextValue
+    else if Copy(a, 1, 13) = '--output-dir=' then outDir := Copy(a, 14, MaxInt)
+    else if (a = '-f') or (a = '--force') then force := True
+    else if (a = '-n') or (a = '--dry-run') then dryRun := True
+    else if (a = '-q') or (a = '--quiet') then quiet := True
+    else if a = '--keep-corrupt' then keepCorrupt := True
+    else if a = '--no-verify' then noVerify := True
+    else if a = '--clean-temps' then cleanTemps := True
+    else if a = '--no-sync' then SyncToDisk := False
+    else if a = '--stats' then stats := True
+    else if a = '--json' then jsonOut := True
+    else if a = '--with-file' then withFile := True
+    else if Copy(a, 1, 6) = '--cpu=' then begin
+      if not ParseCpuPath(Copy(a, 7, MaxInt), cpuWanted) then
+        UsageError('--cpu: pascal or c, not "' + Copy(a, 7, MaxInt) + '"');
+      cpuGiven := True;
+    end else if a = '-r' then begin
+      v := NextValue;
+      if not TryStrToInt(v, n) or (n < 1) or (n > 1000) then UsageError('-r: a number from 1 to 1000, not "' + v + '"');
+      runs := n;
+      runsGiven := True;
+    end else if (a = '-th') or (Copy(a, 1, 10) = '--threads=') then begin
+      if a = '-th' then v := NextValue else v := Copy(a, 11, MaxInt);
+      if not TryStrToInt(v, n) or (n < 1) or (n > 64) then UsageError('threads: a number from 1 to 64, not "' + v + '"');
+      threads := n;
+      thGiven := True;
+    end else if Copy(a, 1, 13) = '--max-output=' then begin
+      if not ParseSize(Copy(a, 14, MaxInt), maxOutput) then
+        UsageError('--max-output: a size like 256M, 1G or 0, not "' + Copy(a, 14, MaxInt) + '"');
+      if maxOutput = 0 then maxOutput := High(QWord);
+    end
+    { a glued value: say what to write instead }
+    else if Copy(a, 1, 3) = '-th' then UsageError('"' + a + '": write -th ' + Copy(a, 4, MaxInt))
+    else UsageError('unknown option "' + a + '"');
+    Inc(i);
+  end;
+  {$ifdef MSWINDOWS} ExpandWildcards; {$endif}
+  if (inputs.Count = 0) and not (command in [cmReport, cmSelftest]) then UsageError('no input files');
+  if (outArg <> '') and (outDir <> '') then UsageError('-o and --output-dir together');
+  if (command in [cmList, cmTest, cmInfo, cmBench, cmSelftest]) and ((outArg <> '') or (outDir <> '')) then
+    UsageError(args[CommandIndex] + ' writes nothing');
+  if noVerify and (command <> cmCompress) then UsageError('--no-verify is for a');
+  if stats and not (command in [cmCompress, cmExtract, cmTest]) then UsageError('--stats is for a, x and t');
+  if jsonOut and not (command in [cmCompress, cmExtract, cmTest, cmInfo, cmList]) then
+    UsageError('--json is for a, x, t, info and list');
+  if withFile and (command <> cmReport) then UsageError('--with-file is for report');
+  if withFile and (inputs.Count = 0) then UsageError('--with-file copies the FILE of the report: give one');
+  if runsGiven and (command <> cmBench) then UsageError('-r is for bench');
+  if (command in [cmTest, cmInfo, cmReport, cmBench, cmSelftest]) and (force or dryRun or keepCorrupt) then
+    UsageError('-f, -n and --keep-corrupt are for a and x');
+  { durable writes: list, t, info and selftest write nothing; bench and
+    report write, but only their own files (bench in a directory of its own) }
+  if (cleanTemps or not SyncToDisk) and (command in [cmList, cmTest, cmInfo, cmSelftest]) then
+    UsageError(args[CommandIndex] + ' writes nothing');
+  if cleanTemps and not (command in [cmCompress, cmExtract]) then UsageError('--clean-temps is for a and x');
+  if (command = cmReport) and (outDir <> '') then UsageError('report: -o names the report');
+  if (command = cmReport) and (inputs.Count > 1) then UsageError('report takes one file');
+  if (command = cmSelftest) and (inputs.Count > 0) then UsageError('selftest takes no files: its samples are inside');
+  if (command = cmSelftest) and thGiven then UsageError('selftest runs on one thread: no -th');
+end;
+
+function ReadWhole(const f: string; out data: TBytes): Boolean;
+var s: TFileStream;
+begin
+  data := nil;
+  Result := False;
+  if DirectoryExists(f) then begin Fail(f + ': is a directory'); Exit; end;
+  {$ifdef MSWINDOWS}
+  { a pattern still here matched nothing (no Windows name has * or ?) }
+  if LastDelimiter('*?', f) > 0 then begin Fail(f + ': no file matches'); Exit; end;
+  {$endif}
+  StageEnter(stRead);
   try
-    s := Compress(d, stats);
-    back := Decompress(s, Length(d));
-    if (Length(back) = Length(d)) and ((Length(d) = 0) or CompareMem(@back[0], @d[0], Length(d)))
-       and (Length(s) < Length(d)) then
-      stored := False;
-  except
-    on E: Exception do begin
-      if not quiet then Writeln(StdErr, '  codec failed (', E.Message, '): stored');
-      stored := True;
+    s := TFileStream.Create(f, fmOpenRead or fmShareDenyNone);
+    try
+      if QWord(s.Size) > MAX_INPUT then begin Fail(f + ': larger than 2 GiB'); Exit; end;
+      SetLength(data, s.Size);
+      if s.Size > 0 then s.ReadBuffer(data[0], s.Size);
+    finally
+      s.Free;
     end;
+    Result := True;
+    CurJob^.inBytes := Length(data);
+  except
+    on e: Exception do Fail(f + ': ' + e.Message);
   end;
-  if stored then s := d;
-
-  Result := nil;
-  SetLength(Result, HEADER + Length(e) + Length(s));
-  Move(MAGIC[0], Result[0], 4);
-  Result[4] := FORMAT_VERSION;
-  Result[5] := Ord(stored) * FLAG_STORED;
-  Result[6] := 0; Result[7] := 0;
-  for i := 0 to 7 do Result[8 + i] := Byte(QWord(Length(d)) shr (8 * i));
-  Move(h[0], Result[16], 16);
-  Result[32] := Length(e);
-  o := 33;
-  for i := 1 to Length(e) do begin Result[o] := Ord(e[i]); Inc(o); end;
-  if Length(s) > 0 then Move(s[0], Result[o], Length(s));
+  StageEnter(stNone);
 end;
 
-function Unpack(const f: TBytes; out ext: string): TBytes;
-var orig: QWord; i, o, el: SizeInt; h, h2: THash16; stored: Boolean; payload: TBytes;
+function EndsWithSeparator(const s: string): Boolean;
 begin
-  if (Length(f) < HEADER) or not CompareMem(@f[0], @MAGIC[0], 4) then
-    raise Exception.Create('not a .paia file');
-  if f[4] <> FORMAT_VERSION then raise Exception.Create('unknown .paia version ' + IntToStr(f[4]));
-  if (f[5] and not FLAG_STORED) <> 0 then raise Exception.Create('unknown flags');
-  if (f[6] <> 0) or (f[7] <> 0) then raise Exception.Create('reserved bytes not zero');
-  stored := (f[5] and FLAG_STORED) <> 0;
-  orig := 0;
-  for i := 7 downto 0 do orig := (orig shl 8) or f[8 + i];
-  Move(f[16], h[0], 16);
-  el := f[32];
-  if (el > 15) or (HEADER + el > Length(f)) then raise Exception.Create('bad extension field');
-  ext := '';
-  for i := 0 to el - 1 do ext := ext + Chr(f[33 + i]);
-  if not ValidExt(ext) then raise Exception.Create('bad extension field');
-  o := HEADER + el;
-  payload := Copy(f, o, Length(f) - o);
-  if stored then begin
-    if QWord(Length(payload)) <> orig then raise Exception.Create('damaged: size');
-    Result := payload;
-  end else begin
-    { the bomb check, before decoding }
-    if orig > QWord(Length(payload)) * 65536 then raise Exception.Create('damaged: size');
-    if orig > QWord(High(SizeInt) div 2) then raise Exception.Create('too large');
-    Result := Decompress(payload, orig);
-  end;
-  if QWord(Length(Result)) <> orig then raise Exception.Create('damaged: size');
-  h2 := Blake3_128(Result);
-  if not SameHash(h, h2) then raise Exception.Create('damaged: hash');
+  Result := (s <> '') and ((s[Length(s)] = '/') or (s[Length(s)] = DirectorySeparator));
 end;
 
-{ ---------------- the command ---------------- }
+{ Where the output of `input` goes, named `name` by default. }
+function OutputPath(const input, name: string): string;
+var dir: string;
+begin
+  dir := outDir;
+  if outArg <> '' then begin
+    if DirectoryExists(outArg) or EndsWithSeparator(outArg) then dir := outArg
+    else Exit(outArg);
+  end;
+  if dir = '' then Result := ExtractFilePath(input) + name
+  else Result := IncludeTrailingPathDelimiter(dir) + name;
+end;
+
+function Human(n: QWord): string;
+begin
+  if n >= 10 * 1024 * 1024 then Result := Format('%.1f MB', [n / (1024 * 1024)])
+  else if n >= 10 * 1024 then Result := Format('%.1f KB', [n / 1024])
+  else Result := IntToStr(n) + ' B';
+end;
+
+var
+  { every output this run has taken, and every input, by PathKey; Objects
+    is the job's index }
+  outKeys, inKeys: TStringList;
+  claimLock: TRTLCriticalSection;
+
+{ The same file for the same text: absolute, without . and .., and on
+  Windows without case. Links are not resolved. }
+function PathKey(const p: string): string;
+begin
+  Result := ExpandFileName(p);
+  {$ifdef MSWINDOWS} Result := UTF8Encode(WideLowerCase(UTF8Decode(Result))); {$endif}
+end;
+
+function NewKeyList: TStringList;
+begin
+  Result := TStringList.Create;
+  Result.CaseSensitive := True;
+  Result.UseLocale := False;
+  Result.Duplicates := dupAccept;
+  Result.Sorted := True;
+end;
+
+{ Takes path as the output of the current job. Without this, with -f two
+  inputs with the same output (a.gif and a.GIF, or the same name from two
+  folders with --output-dir) both said they were written, and only the last
+  one was there; one could also replace another job's input before it was
+  read. False, and the job failed, if the path is another job's. }
+function Claim(const path: string): Boolean;
+var key: string; i, j, k: Integer;
+begin
+  key := PathKey(path); k := CurJob^.index;
+  Result := False;
+  EnterCriticalSection(claimLock);
+  try
+    if outKeys.Find(key, i) then begin
+      j := PtrInt(outKeys.Objects[i]);
+      if j <> k then begin Fail(path + ': also the output of ' + jobs[j].name + ' in this run'); Exit; end;
+      Exit(True);
+    end;
+    if inKeys.Find(key, i) then begin
+      while (i > 0) and (inKeys[i - 1] = key) do Dec(i);
+      while (i < inKeys.Count) and (inKeys[i] = key) do begin
+        if PtrInt(inKeys.Objects[i]) <> k then begin Fail(path + ': also an input of this run'); Exit; end;
+        Inc(i);
+      end;
+    end;
+    outKeys.AddObject(key, TObject(PtrInt(k)));
+    Result := True;
+  finally
+    LeaveCriticalSection(claimLock);
+  end;
+end;
+
+{ Anything under that name, a link that leads nowhere included (FileExists
+  follows links, and a dangling one said no where the write then failed) }
+function Exists(const path: string): Boolean;
+{$ifdef UNIX} var st: Stat; {$endif}
+begin
+  {$ifdef UNIX}
+  FillChar(st, SizeOf(st), 0);
+  Result := fpLstat(path, st) = 0;
+  {$else}
+  Result := FileExists(path) or DirectoryExists(path);
+  {$endif}
+end;
+
+{ Save's checks before the write: the name taken in this run, what an
+  interrupted run left, an existing file without -f }
+function SaveCheck(const path: string): Boolean;
+var note: string;
+begin
+  Result := False;
+  if not Claim(path) then Exit;
+  { what an interrupted run left in this directory: a notice, not a failure }
+  note := CheckLeftovers(path, cleanTemps and not dryRun);
+  if note <> '' then CurJob^.errText := CurJob^.errText + 'paia: ' + note + LineEnding;
+  { -n checks this too: it said yes to what the real run then refused }
+  if not force and Exists(path) then begin
+    Fail(path + ': already exists (-f to replace it)');
+    Exit;
+  end;
+  Result := True;
+end;
+
+{ Save's write, after SaveCheck }
+function SaveWrite(const path: string; const data: TBytes; const expected: THash16): Boolean;
+var r: TFsResult; o: TOutcome; om: TOnMismatch;
+begin
+  Result := False;
+  if keepCorrupt then om := omKeep else om := omDelete;
+  StageEnter(stWrite);
+  r := WriteVerified(path, data, expected, om, force, o);
+  StageEnter(stNone);
+  { in place and whole, but its name may not survive a power cut }
+  if r.error = feNotSynced then begin
+    Fail(o.path + ': written, but its directory could not be flushed to the disk: ' +
+         SysErrorMessage(r.code) + ' (' + r.Text + ')');
+    if o.kind = ocKept then Fail(path + ': does not verify; kept as ' + o.path);
+    Exit;
+  end;
+  if not r.Ok then begin
+    { the system's own words for its error, and its number }
+    if r.code >= 0 then Fail(path + ': could not write it: ' + SysErrorMessage(r.code) + ' (' + r.Text + ')')
+    else Fail(path + ': could not write it (' + r.Text + ')');
+    Exit;
+  end;
+  case o.kind of
+    ocVerified: Result := True;
+    ocDeleted: Fail(path + ': does not verify; nothing written');
+    ocKept: Fail(path + ': does not verify; kept as ' + o.path);
+  end;
+end;
+
+{ Writes data under path, which must verify against `expected`. }
+function Save(const path: string; const data: TBytes; const expected: THash16): Boolean;
+begin
+  Result := SaveCheck(path);
+  if Result and not dryRun then Result := SaveWrite(path, data, expected);
+end;
+
+
+function StoredNote(const paia: TBytes): string;
+begin
+  if (Length(paia) > 5) and ((paia[5] and FLAG_STORED) <> 0) then Result := '  (stored as is)' else Result := '';
+end;
+
+{ what the codec took of the file (the records of the stream), for the
+  line and for --json; '' when it took nothing }
+function RecordsOf(const st: TCodecStats): string;
+  procedure Add(n: Integer; const what: string);
+  begin
+    if n <= 0 then Exit;
+    if Result <> '' then Result := Result + ', ';
+    Result := Result + IntToStr(n) + ' ' + what;
+  end;
+begin
+  Result := '';
+  if st.images > 0 then Add(st.imagesTaken, 'of ' + IntToStr(st.images) + ' GIF images');
+  Add(st.fliChunks, 'FLIC chunks');
+  Add(st.dibs, 'ANI bitmaps');
+  Add(st.iffChunks, 'IFF ANIM chunks');
+  Add(st.webpStreams, 'VP8L streams');
+  Add(st.vp8Frames, 'VP8 frames');
+end;
 
 function Pct(a, b: Int64): string;
 begin
-  if b = 0 then Result := '-' else Result := Format('%.2f%%', [100.0 * a / b]);
+  if b <= 0 then Result := '' else Result := Format('  %.2f%%', [100 * a / b]);
 end;
 
-function Target(const src, newExt: string): string;
-var base: string;
+{ --stats: where the file's time went (paiastage) }
+procedure StatsOf;
+var t: TStageTimes; st: TStage; o: TInfoNode; line: string; total: Double;
 begin
-  base := ChangeFileExt(ExtractFileName(src), '');
-  if newExt <> '' then base := base + '.' + newExt;
-  if outDir <> '' then Result := IncludeTrailingPathDelimiter(outDir) + base
-  else Result := ExtractFilePath(src) + base;
+  if not stats then Exit;
+  t := StageTimes;
+  o := JobNode.Obj('stats');
+  line := '';
+  total := 0;
+  for st := Low(TStage) to High(TStage) do
+    if t[st] > 0 then begin
+      total := total + t[st];
+      o.Fixed(STAGE_NAMES[st] + '_ms', t[st] * 1000, 3);
+      if line <> '' then line := line + ', ';
+      line := line + STAGE_NAMES[st] + ' ' + DotNumber(t[st] * 1000, 2) + ' ms';
+    end;
+  o.Fixed('total_ms', total * 1000, 3);
+  { with -q the file's own line is not there: the stats name it }
+  if not jsonOut and quiet then CurJob^.outText := CurJob^.outText + CurJob^.name + ':' + LineEnding;
+  if not jsonOut then
+    CurJob^.outText := CurJob^.outText + '  stats: ' + line + '; total ' + DotNumber(total * 1000, 2) + ' ms' +
+                       LineEnding;
 end;
 
-function DoA(const name: string): Boolean;
-var d, f: TBytes; st: TCodecStats; stored: Boolean; ext, dst: string; t0: QWord;
-begin
-  t0 := GetTickCount64;
-  d := ReadAll(name);
-  ext := ExtractFileExt(name); if ext <> '' then Delete(ext, 1, 1);
-  f := Pack(d, ext, st, stored);
-  dst := Target(name, 'paia');
-  WriteAll(dst, f);
-  if not quiet then
-    Writeln(name, ': ', Length(d), ' -> ', Length(f), ' (', Pct(Length(f), Length(d)), ')',
-            '  images ', st.imagesTaken, '/', st.images, '  flic chunks ', st.fliChunks, '  ani bitmaps ', st.dibs, '  iff chunks ', st.iffChunks, '  vp8l ', st.webpStreams, '  vp8 ', st.vp8Frames,
-            '  pixels ', st.pixels, '  exceptions ', st.exceptions,
-            BoolToStr(stored, '  STORED', ''), '  ', (GetTickCount64 - t0) / 1000:0:2, ' s');
-  Result := True;
-end;
-
-function DoX(const name: string; test: Boolean): Boolean;
-var f, d: TBytes; ext: string;
-begin
-  f := ReadAll(name);
-  d := Unpack(f, ext);
-  if not test then WriteAll(Target(name, ext), d);
-  if not quiet then Writeln(name, ': ok, ', Length(d), ' bytes');
-  Result := True;
-end;
-
-var i, failures, files: Integer; cmd: string; names: TStringList;
-begin
-  if (ParamCount = 1) and ((ParamStr(1) = '--version') or (ParamStr(1) = '-V')) then begin
-    Writeln('paia ', PAIA_VERSION);
-    Halt(0);
+{ The committer (from PJA 0.9.7): a file's write, flushed to the disk
+  before it takes its name (paiafs), waits about 16 ms on a SATA SSD. So when every write is flushed and
+  --stats does not time it, the worker checks the name (SaveCheck) and
+  hands the write and the rest of the job (its line, its --json object) to
+  one thread that does them in turn, and goes on to the next file: the same
+  files, lines and order, the flush beside the next file's work. At most
+  MAX_PENDING writes wait (their bytes are held). }
+type
+  TDoneKind = (dkCompress, dkExtract);
+  TPending = record
+    k: Integer;
+    kind: TDoneKind;
+    path, f, records: string;
+    data: TBytes;
+    expected: THash16;
+    inLen: Int64;
   end;
-  if ParamCount < 2 then begin
-    Writeln('paia ', PAIA_VERSION, ': lossless recompression of animated images');
-    Writeln('usage: paia a|x|t [-o DIR] [-f] [-q] FILE...');
-    Writeln('       paia --version');
-    Halt(2);
+  TCommitter = class(TJoinThread)
+    procedure Execute; override;
   end;
-  cmd := ParamStr(1);
-  names := TStringList.Create;
-  i := 2;
-  while i <= ParamCount do begin
-    if ParamStr(i) = '-o' then begin Inc(i); outDir := ParamStr(i); end
-    else if ParamStr(i) = '-f' then force := True
-    else if ParamStr(i) = '-q' then quiet := True
-    else names.Add(ParamStr(i));
-    Inc(i);
+
+const
+  MAX_PENDING = 8;
+
+var
+  asyncCommit: Boolean = False;
+  pend: array[0..MAX_PENDING - 1] of TPending;
+  pendHead, pendCount: Integer;
+  pendStop: Boolean;
+  pendLock: TRTLCriticalSection;
+  pendWake, pendRoom: PRTLEvent;
+  committer: TCommitter = nil;
+
+procedure FinishJob(k: Integer); forward;
+
+{ what a written .paia or original adds to its job }
+procedure CompressDone(const f, path: string; origLen: Int64; const paia: TBytes; const records: string);
+begin
+  CurJob^.outBytes := Length(paia);
+  JobNode.Str('output', path);
+  JobNode.Num('original_size', origLen);
+  JobNode.Num('paia_size', Length(paia));
+  if origLen > 0 then JobNode.Fixed('ratio_percent', 100 * Length(paia) / origLen);
+  JobNode.Bool('stored', StoredNote(paia) <> '');
+  JobNode.Str('records', records);
+  if not quiet then begin
+    if records <> '' then
+      Say(f + ' -> ' + path + '  ' + Human(origLen) + ' -> ' + Human(Length(paia)) + Pct(Length(paia), origLen) +
+          { the codec would not have made it smaller }
+          StoredNote(paia) + '  (' + records + ')')
+    else
+      Say(f + ' -> ' + path + '  ' + Human(origLen) + ' -> ' + Human(Length(paia)) + Pct(Length(paia), origLen) +
+          StoredNote(paia) + '  (nothing PAIA models)');
   end;
-  failures := 0; files := 0;
-  for i := 0 to names.Count - 1 do begin
-    Inc(files);
+end;
+
+procedure ExtractDone(const f, path: string; const orig: TBytes; paiaLen: Int64);
+begin
+  CurJob^.outBytes := Length(orig);
+  JobNode.Str('output', path);
+  JobNode.Num('original_size', Length(orig));
+  JobNode.Num('paia_size', paiaLen);
+  if not quiet then Say(f + ' -> ' + path + '  ' + Human(Length(orig)));
+end;
+
+{ the job's write and end to the committer; waits while MAX_PENDING wait }
+procedure Defer(kind: TDoneKind; const f, path: string; const data: TBytes; const expected: THash16;
+  inLen: Int64; const records: string);
+var i: Integer;
+begin
+  CurJob^.deferred := True;
+  repeat
+    EnterCriticalSection(pendLock);
+    if pendCount < MAX_PENDING then begin
+      i := (pendHead + pendCount) mod MAX_PENDING;
+      pend[i].k := CurJob^.index; pend[i].kind := kind;
+      pend[i].f := f; pend[i].path := path; pend[i].records := records;
+      pend[i].data := data; pend[i].expected := expected; pend[i].inLen := inLen;
+      Inc(pendCount);
+      LeaveCriticalSection(pendLock);
+      RTLEventSetEvent(pendWake);
+      Exit;
+    end;
+    LeaveCriticalSection(pendLock);
+    RTLEventWaitFor(pendRoom, 50);
+  until False;
+end;
+
+procedure TCommitter.Execute;
+var p: TPending; have: Boolean;
+begin
+  repeat
+    EnterCriticalSection(pendLock);
+    have := pendCount > 0;
+    if have then begin
+      p := pend[pendHead];
+      pend[pendHead].data := nil;
+      pendHead := (pendHead + 1) mod MAX_PENDING;
+      Dec(pendCount);
+    end;
+    LeaveCriticalSection(pendLock);
+    if not have then begin
+      if pendStop then Break;
+      RTLEventWaitFor(pendWake, 50);
+      Continue;
+    end;
+    RTLEventSetEvent(pendRoom);
+    CurJob := @jobs[p.k];
     try
-      if cmd = 'a' then DoA(names[i])
-      else if cmd = 'x' then DoX(names[i], False)
-      else if cmd = 't' then DoX(names[i], True)
-      else begin Writeln(StdErr, 'unknown command: ', cmd); Halt(2); end;
+      if SaveWrite(p.path, p.data, p.expected) then
+        case p.kind of
+          dkCompress: CompressDone(p.f, p.path, p.inLen, p.data, p.records);
+          dkExtract: ExtractDone(p.f, p.path, p.data, p.inLen);
+        end;
     except
-      on E: Exception do begin
-        Inc(failures);
-        Writeln(StdErr, names[i], ': ', E.Message);
+      on e: Exception do begin
+        if not NotABug(e) then begin
+          jobs[p.k].bug := True;
+          Fail(jobs[p.k].name + ': internal error: ' + e.ClassName + ': ' + e.Message);
+        end else Fail(jobs[p.k].name + ': ' + e.ClassName + ': ' + e.Message);
       end;
     end;
+    p.data := nil;
+    FinishJob(p.k);
+  until False;
+end;
+
+procedure StartCommitter;
+begin
+  InitCriticalSection(pendLock);
+  pendWake := RTLEventCreate; pendRoom := RTLEventCreate;
+  pendHead := 0; pendCount := 0; pendStop := False;
+  try
+    committer := TCommitter.Create(False);
+  except
+    on EThread do committer := nil;
   end;
-  names.Free;
-  if failures > 0 then Halt(1);
+  asyncCommit := committer <> nil;
+end;
+
+{ every write done and every job ended }
+procedure StopCommitter;
+begin
+  if committer = nil then Exit;
+  EnterCriticalSection(pendLock);
+  pendStop := True;
+  LeaveCriticalSection(pendLock);
+  RTLEventSetEvent(pendWake);
+  committer.Join;
+  committer.Free;
+  committer := nil;
+  asyncCommit := False;
+end;
+
+{ The codec raised, or its stream did not come back: a bug in PAIA. The
+  file was stored as it is, so nothing is lost; the run says it and ends
+  with 3. }
+procedure CodecBug(const f: string; const r: TPackResult);
+begin
+  CurJob^.bug := True;
+  Fail(f + ': internal error: the codec failed (' + r.codecError + '); the original was stored as it is');
+end;
+
+procedure CompressOne(const f: string);
+var d, paia: TBytes; r: TPackResult; path: string;
+begin
+  if not ReadWhole(f, d) then Exit;
+  if IsPaia(d) then begin Fail(f + ': already a .paia'); Exit; end;
+  { the extension, as it is written, for x to give it back (one the format
+    cannot keep is left out: x then finds it by the content) }
+  r := Pack(d, paia, not noVerify, Copy(ExtractFileExt(f), 2, MaxInt));
+  if not r.Ok then begin Fail(f + ': ' + r.Text); Exit; end;
+  path := OutputPath(f, ChangeFileExt(ExtractFileName(f), '.paia'));
+  if asyncCommit then begin
+    if SaveCheck(path) then begin
+      if r.codecFailed then CodecBug(f, r);
+      Defer(dkCompress, f, path, paia, Blake3_128(paia), Length(d), RecordsOf(r.stats));
+    end;
+    Exit;
+  end;
+  if Save(path, paia, Blake3_128(paia)) then CompressDone(f, path, Length(d), paia, RecordsOf(r.stats));
+  if r.codecFailed then CodecBug(f, r);
+  StatsOf;
+end;
+
+{ the extension of an original whose .paia does not keep one: by its
+  content }
+function ContentExt(const d: TBytes): string;
+var m: Integer;
+  function Tag(at: Integer; const s: string): Boolean;
+  var i: Integer;
+  begin
+    Result := Length(d) >= at + Length(s);
+    if Result then
+      for i := 1 to Length(s) do if d[at + i - 1] <> Ord(s[i]) then Exit(False);
+  end;
+begin
+  if Tag(0, 'GIF8') then Exit('.gif');
+  if Tag(0, 'RIFF') and Tag(8, 'ACON') then Exit('.ani');
+  if Tag(0, 'RIFF') and Tag(8, 'WEBP') then Exit('.webp');
+  if Tag(0, 'FORM') and Tag(8, 'ANIM') then Exit('.anim');
+  if Length(d) >= 128 then begin
+    m := d[4] or (d[5] shl 8);
+    if m = $AF11 then Exit('.fli');
+    if m = $AF12 then Exit('.flc');
+  end;
+  Result := '.bin';
+end;
+
+procedure ExtractOne(const f: string);
+var d, orig: TBytes; r: TPackResult; path, ext: string; h: THash16;
+begin
+  if not ReadWhole(f, d) then Exit;
+  r := Unpack(d, maxOutput, orig, h);
+  if r.err = ukTooLarge then begin
+    Fail(f + ': the original is larger than --max-output'); Exit;
+  end;
+  if not (r.Ok or (r.err = ukHashMismatch)) then begin Fail(f + ': ' + r.Text); Exit; end;
+  { -n does everything but write: a hash that does not match fails it as
+    it fails x (Save, which -n stops before, is where x finds it) }
+  if dryRun and (r.err = ukHashMismatch) then begin Fail(f + ': does not verify (' + r.Text + ')'); Exit; end;
+  { the original's own extension; a .paia without one by the content }
+  if r.ext <> '' then ext := '.' + r.ext
+  else ext := ContentExt(orig);
+  path := OutputPath(f, ChangeFileExt(ExtractFileName(f), ext));
+  { a hash that does not match goes through Save as well: it deletes it, or
+    keeps it under another name with --keep-corrupt }
+  if asyncCommit then begin
+    if SaveCheck(path) then Defer(dkExtract, f, path, orig, h, Length(d), '');
+    Exit;
+  end;
+  if Save(path, orig, h) then ExtractDone(f, path, orig, Length(d));
+  StatsOf;
+end;
+
+{ t: what x does, without writing: the size and the hash checked }
+procedure TestOne(const f: string);
+var d, orig: TBytes; r: TPackResult; h: THash16;
+begin
+  if not ReadWhole(f, d) then Exit;
+  if not IsPaia(d) then begin Fail(f + ': FAILED: not a .paia'); Exit; end;
+  r := Unpack(d, maxOutput, orig, h);
+  StageEnter(stNone);
+  if r.err = ukTooLarge then begin Fail(f + ': FAILED: the original is larger than --max-output'); Exit; end;
+  if not r.Ok then begin Fail(f + ': FAILED: ' + r.Text); Exit; end;
+  CurJob^.outBytes := Length(orig);
+  JobNode.Num('original_size', Length(orig));
+  JobNode.Num('paia_size', Length(d));
+  if not quiet then Say(f + ': OK  ' + Human(Length(orig)) + ', size and BLAKE3-128 verified');
+  StatsOf;
+end;
+
+{ info: the structure, and what PAIA does with it }
+procedure InfoOne(const f: string);
+var d: TBytes; n, bug: TInfoNode; sl: TStringList;
+begin
+  if not ReadWhole(f, d) then Exit;
+  n := DescribeFile(f, d, False, 1, maxOutput, idDefault);
+  bug := n.Find('internal_error');
+  if bug <> nil then begin
+    CurJob^.bug := True;
+    Fail(f + ': internal error: ' + bug.value);
+  end;
+  if jsonOut then begin
+    CurJob^.node.Free;
+    CurJob^.node := n;
+    Exit;
+  end;
+  sl := TStringList.Create;
+  try
+    n.Render(sl, 2);
+    sl.Delete(0);
+    sl.Insert(0, f);
+    Say(TrimRight(sl.Text));
+  finally
+    sl.Free;
+    n.Free;
+  end;
+end;
+
+function ExtNote(const ext: string): string;
+begin
+  if ext = '' then Result := '' else Result := ', as .' + ext;
+end;
+
+procedure ListOne(const f: string);
+var d: TBytes; p: TPaia; r: TPaiaResult; i: Integer; hex: string;
+begin
+  if not ReadWhole(f, d) then Exit;
+  r := Open(d, p);
+  if not r.Ok then begin Fail(f + ': ' + r.Text); Exit; end;
+  hex := '';
+  for i := 0 to 15 do hex := hex + LowerCase(IntToHex(p.hash[i], 2));
+  JobNode.Num('original_size', p.orig_size);
+  JobNode.Num('paia_size', Length(d));
+  if p.orig_size > 0 then JobNode.Fixed('ratio_percent', 100 * Length(d) / p.orig_size);
+  JobNode.Bool('stored', p.stored);
+  JobNode.Str('extension', p.ext);
+  JobNode.Str('blake3_128', hex);
+  Say(f + '  original ' + IntToStr(p.orig_size) + ' B, .paia ' + IntToStr(Length(d)) + ' B' +
+      Pct(Length(d), p.orig_size) + StoredNote(d) + ExtNote(p.ext) + '  blake3-128 ' + hex);
+end;
+
+var
+  nextJob, nextPrint: LongInt;
+  { the jobs in the order the workers take them }
+  order: array of Integer;
+  printLock: TRTLCriticalSection;
+  { the bytes every file read and wrote, for the summary }
+  sumIn, sumOut: Int64;
+  { what writing the output met, '' if nothing }
+  outputError: string;
+
+{ PAIA_TEST_CRASH=range or access: a bug on purpose (cli.sh checks how the
+  command ends then) }
+var crashTarget: PInteger = nil;
+
+procedure CrashTest;
+var w: string;
+begin
+  w := GetEnvironmentVariable('PAIA_TEST_CRASH');
+  if w = 'range' then raise ERangeError.Create('Range check error (PAIA_TEST_CRASH)');
+  if w = 'access' then crashTarget^ := 1;
+end;
+
+procedure RunJob(k: Integer);
+begin
+  CurJob := @jobs[k];
+  jobs[k].node := TInfoNode.Create(ikObject);
+  jobs[k].node.Str('file', jobs[k].name);
+  StageReset;
+  try
+    { failed before starting: its output is another input's }
+    if not jobs[k].failed then begin
+      CrashTest;
+      case command of
+        cmCompress: CompressOne(jobs[k].name);
+        cmExtract: ExtractOne(jobs[k].name);
+        cmList: ListOne(jobs[k].name);
+        cmTest: TestOne(jobs[k].name);
+        cmInfo: InfoOne(jobs[k].name);
+      end;
+    end;
+  except
+    on e: Exception do begin
+      if not NotABug(e) then begin
+        jobs[k].bug := True;
+        Fail(jobs[k].name + ': internal error: ' + e.ClassName + ': ' + e.Message);
+      end else Fail(jobs[k].name + ': ' + e.ClassName + ': ' + e.Message);
+    end;
+  end;
+  { the committer ends it }
+  if jobs[k].deferred then Exit;
+  FinishJob(k);
+end;
+
+{ a job's --json object, and its lines printed when it is next in line }
+procedure FinishJob(k: Integer);
+begin
+  if jsonOut then begin
+    { info's "ok": the file was read and described (what PAIA does with
+      it is under "paia") }
+    jobs[k].node.Bool('ok', not jobs[k].failed);
+    if jobs[k].errors <> '' then jobs[k].node.Str('error', jobs[k].errors);
+    if jobs[k].bug and (jobs[k].node.Find('internal_error') = nil) then jobs[k].node.Bool('internal_error', True);
+    jobs[k].outText := jobs[k].node.Json + LineEnding;
+  end;
+  FreeAndNil(jobs[k].node);
+  { print every finished job that is next in line }
+  EnterCriticalSection(printLock);
+  try
+    jobs[k].done := True;
+    while (nextPrint < Length(jobs)) and jobs[nextPrint].done do begin
+      { Output and StdErr are per thread in FPC, each with its own buffer:
+        flushed here, inside the lock, or a worker's lines would come out
+        when it ends }
+      { the output that cannot be written (a full disk) is said once, at
+        the end, and the rest of the run goes on without it }
+      if (jobs[nextPrint].outText <> '') and (outputError = '') then
+        try
+          Write(jobs[nextPrint].outText); Flush(Output);
+        except
+          on e: Exception do begin
+            TextRec(Output).BufPos := 0;
+            InOutRes := 0;
+            outputError := e.Message;
+          end;
+        end;
+      if jobs[nextPrint].errText <> '' then begin Write(StdErr, jobs[nextPrint].errText); Flush(StdErr); end;
+      if jobs[nextPrint].failed then Inc(errors);
+      if jobs[nextPrint].bug then begin
+        if bugs = 0 then bugFile := jobs[nextPrint].name;
+        Inc(bugs);
+      end;
+      Inc(sumIn, jobs[nextPrint].inBytes);
+      Inc(sumOut, jobs[nextPrint].outBytes);
+      jobs[nextPrint].outText := ''; jobs[nextPrint].errText := '';
+      Inc(nextPrint);
+    end;
+  finally
+    LeaveCriticalSection(printLock);
+  end;
+end;
+
+{ takes the next input until none is left: one file a thread (the codec
+  works a file on one; threads change no output) }
+var workLock: TRTLCriticalSection;
+
+procedure Work;
+var k: LongInt;
+begin
+  repeat
+    EnterCriticalSection(workLock);
+    k := nextJob;
+    if k < Length(jobs) then Inc(nextJob);
+    LeaveCriticalSection(workLock);
+    if k >= Length(jobs) then Break;
+    RunJob(order[k]);
+  until False;
+end;
+
+{ With several workers the largest files go first (by the size of the
+  input: the original for a, the .paia for x and list), so that no big file is left
+  for the end while the other threads wait: on 30 files of sizes 10x apart,
+  in name order, -th 8 took up to a fifth longer (PJA). A file that cannot be
+  read counts as 0 and goes last. The lines still come out in the order of
+  the inputs (nextPrint), and with one worker nothing changes, so x's
+  outputs are taken in the input order there, as before. }
+procedure ScheduleJobs(workers: Integer);
+var i, j, t: Integer; size: array of Int64; sr: TSearchRec;
+begin
+  order := nil; size := nil;
+  SetLength(order, Length(jobs)); SetLength(size, Length(jobs));
+  for i := 0 to High(jobs) do begin
+    order[i] := i; size[i] := 0;
+    if (workers > 1) and (FindFirst(jobs[i].name, faAnyFile, sr) = 0) then begin
+      size[i] := sr.Size; FindClose(sr);
+    end;
+    if size[i] < 0 then size[i] := 0;
+    jobs[i].size := size[i];
+  end;
+  { stable insertion sort, largest first: the same order every run }
+  for i := 1 to High(order) do begin
+    t := order[i]; j := i - 1;
+    while (j >= 0) and (size[order[j]] < size[t]) do begin order[j + 1] := order[j]; Dec(j); end;
+    order[j + 1] := t;
+  end;
+end;
+
+type
+  TWorker = class(TJoinThread)
+    procedure Execute; override;
+  end;
+
+procedure TWorker.Execute;
+begin
+  Work;
+end;
+
+{ the end of a run that met a bug: what to do about it }
+procedure BugNote(const f: string);
+var name: string;
+begin
+  name := f;
+  if name = '' then name := 'FILE';
+  if Pos(' ', name) > 0 then name := '"' + name + '"';
+  Writeln(StdErr, 'paia: This is a bug in PAIA. Please run: paia report ', name, ' and open an issue at ', ISSUES_URL);
+end;
+
+{ paia report }
+function DoReport: Integer;
+var d: TBytes; f, title, text, url, copied, msg, dir: string; job: TFileJob; rest: array of string; i: Integer;
+    r: TFsResult; o: TOutcome; tb: TBytes; cut: Boolean;
+begin
+  Result := 0;
+  f := '';
+  d := nil;
+  job := Default(TFileJob);
+  CurJob := @job;
+  if inputs.Count > 0 then begin
+    f := inputs[0];
+    if not ReadWhole(f, d) then begin Write(StdErr, job.errText); Exit(1); end;
+  end;
+  rest := nil;
+  SetLength(rest, ArgCount);
+  for i := 1 to ArgCount do rest[i - 1] := args[i];
+  text := BuildReport(f, d, rest, threads, maxOutput, title);
+  url := IssueUrl(title, text, cut);
+  if outArg = '' then Write(text)
+  else begin
+    tb := nil;
+    SetLength(tb, Length(text));
+    if Length(text) > 0 then Move(text[1], tb[0], Length(text));
+    r := WriteVerified(outArg, tb, Blake3_128(tb), omDelete, force, o);
+    { whole and in place, but its name may not survive a power cut }
+    if r.error = feNotSynced then begin
+      Writeln(StdErr, 'paia: ', outArg, ': written, but its directory could not be flushed to the disk: ',
+              SysErrorMessage(r.code), ' (', r.Text, ')');
+      Exit(1);
+    end;
+    if not r.Ok then begin
+      if r.code >= 0 then Writeln(StdErr, 'paia: ', outArg, ': could not write it: ', SysErrorMessage(r.code), ' (', r.Text, ')')
+      else Writeln(StdErr, 'paia: ', outArg, ': could not write it (', r.Text, ')');
+      Exit(1);
+    end;
+    Writeln('paia: the report is in ', outArg);
+  end;
+  if withFile and (f <> '') then begin
+    if outArg <> '' then dir := ExtractFilePath(outArg) else dir := '';
+    copied := CopyBeside(f, d, dir, msg);
+    if copied = '' then begin Writeln(StdErr, 'paia: ', msg); Result := 1; end
+    else Writeln('paia: the file, to attach if you wish: ', copied,
+                 ' (GitHub takes a .gif as it is; zip any other first)');
+  end;
+  Writeln;
+  if cut then
+    Writeln('Open an issue with this report (the link has room for part of it: paste the whole report ',
+            'in the issue, check it and add the steps):')
+  else Writeln('Open an issue with this report (the link holds it; check it and add the steps):');
+  Writeln(url);
+end;
+
+{ the summary of --stats and --json }
+procedure Summary(wall: Double);
+var o, s: TInfoNode; orig: Int64;
+begin
+  if jsonOut then begin
+    o := TInfoNode.Create(ikObject);
+    try
+      s := o.Obj('summary');
+      s.Str('command', args[CommandIndex]);
+      s.Num('files', Length(jobs));
+      s.Num('failed', errors);
+      s.Num('bugs', bugs);
+      s.Num('bytes_in', sumIn);
+      s.Num('bytes_out', sumOut);
+      s.Fixed('seconds', wall, 6);
+      s.Num('threads', threads);
+      Writeln(o.Json);
+    finally
+      o.Free;
+    end;
+  end else if stats then begin
+    { MB/s of the originals: what a reads, what x and t give }
+    if command = cmCompress then orig := sumIn else orig := sumOut;
+    Write('paia: ', Length(jobs), ' file(s), ', Human(sumIn), ' -> ', Human(sumOut), ', ',
+          DotNumber(wall * 1000, 2), ' ms, ', threads, ' thread(s)');
+    if wall > 0 then Write(', ', DotNumber(orig / (1024 * 1024) / wall, 2), ' MB/s');
+    Writeln;
+  end;
+end;
+
+var i, n, workers: Integer; pool: array of TWorker; path: string; started: Double;
+begin
+  { On Unix only '/' separates: the RTL's ExtractFileName and ChangeFileExt
+    also cut at '\', a plain character there, so 'a\x.gif' and 'b\x.gif'
+    both went to x.paia. (The extension kept is the same: one with '\' is
+    not one the format takes.) }
+  {$ifndef MSWINDOWS} AllowDirectorySeparators := ['/']; {$endif}
+  { the commit, from PAIA_COMMIT at build time (as the plugin's; '' if not
+    set): here, in the program, which is compiled every time }
+  BuildCommit := {$I %PAIA_COMMIT%};
+  BuildDate := {$I %DATE%};
+  errors := 0; bugs := 0; bugFile := ''; sumIn := 0; sumOut := 0; outputError := '';
+  try
+  ParseArgs;
+  { before any write: report's and bench's too }
+  InstallInterruptCleanup;
+  ApplyCpu;
+  StagesOn := stats;
+  case command of
+    cmReport: Finish(DoReport);
+    cmBench: Finish(RunBench(inputs, runs, threads));
+    { --cpu: that path alone }
+    cmSelftest: Finish(RunSelftest(quiet, cpuGiven, cpuWanted));
+  end;
+  started := Seconds;
+  if (outArg <> '') and (inputs.Count > 1) and not (DirectoryExists(outArg) or EndsWithSeparator(outArg)) then
+    UsageError('-o with several inputs has to be a directory');
+  jobs := nil;
+  SetLength(jobs, inputs.Count);
+  InitCriticalSection(claimLock);
+  outKeys := NewKeyList; inKeys := NewKeyList;
+  for i := 0 to inputs.Count - 1 do begin
+    jobs[i] := Default(TFileJob);
+    jobs[i].name := inputs[i];
+    jobs[i].index := i;
+    inKeys.AddObject(PathKey(inputs[i]), TObject(PtrInt(i)));
+  end;
+  { a's outputs follow from the names alone: taken here, in the order of the
+    inputs, so it is always the later one that fails. x's come from inside
+    the .paia, and are taken when written. An input that is not there takes
+    nothing: it fails on its own, and must not take a later one down. }
+  if command = cmCompress then
+    for i := 0 to High(jobs) do if FileExists(jobs[i].name) then begin
+      CurJob := @jobs[i];
+      path := OutputPath(jobs[i].name, ChangeFileExt(ExtractFileName(jobs[i].name), '.paia'));
+      Claim(path);
+    end;
+  { a file a thread }
+  workers := threads;
+  if workers > inputs.Count then workers := inputs.Count;
+  nextJob := 0; nextPrint := 0;
+  ScheduleJobs(workers);
+  InitCriticalSection(printLock);
+  InitCriticalSection(workLock);
+  { the writes beside the work: when each is flushed, and --stats does not
+    time them }
+  if (command in [cmCompress, cmExtract]) and SyncToDisk and not dryRun and not stats and
+     (GetEnvironmentVariable('PAIA_SYNC_INLINE') = '') then StartCommitter;
+  pool := nil;
+  SetLength(pool, workers - 1);
+  { a thread the system refuses (a host at its limit) leaves the files to
+    the ones it gave and to this one: the same outputs, only slower }
+  n := 0;
+  while n < Length(pool) do begin
+    try
+      pool[n] := TWorker.Create(False);
+    except
+      on EThread do Break;
+    end;
+    Inc(n);
+  end;
+  SetLength(pool, n);
+  Work;
+  for i := 0 to High(pool) do begin pool[i].Join; pool[i].Free; end;
+  StopCommitter;
+  DoneCriticalSection(printLock);
+  DoneCriticalSection(workLock);
+  DoneCriticalSection(claimLock);
+  if (stats or jsonOut) and (outputError = '') then Summary(Seconds - started);
+  if outputError <> '' then begin
+    Writeln(StdErr, 'paia: could not write the output: ', outputError);
+    if bugs > 0 then begin BugNote(bugFile); Halt(3); end;
+    Halt(1);
+  end;
+  if errors > 0 then begin
+    if inputs.Count > 1 then Writeln(StdErr, 'paia: ', errors, ' of ', inputs.Count, ' files failed');
+    if bugs > 0 then begin BugNote(bugFile); Halt(3); end;
+    Halt(1);
+  end;
+  Finish(0);
+  except
+    { anything not caught where a file is worked on: a bug }
+    on e: Exception do begin
+      { a write or a read the system refused (a full disk): not a bug }
+      if NotABug(e) then begin
+        if e is EInOutError then OutputFailed(e.Message) else Writeln(StdErr, 'paia: ', e.Message);
+        Halt(1);
+      end;
+      Writeln(StdErr, 'paia: internal error: ', e.ClassName, ': ', e.Message);
+      if inputs <> nil then begin
+        if inputs.Count > 0 then BugNote(inputs[0]) else BugNote('');
+      end else BugNote('');
+      Halt(3);
+    end;
+  end;
 end.

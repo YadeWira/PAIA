@@ -274,3 +274,15 @@ void paia_code_pixels(TPixState *s, TCState *cd, uint8_t *px, int64_t i0, int64_
   }
   r->run = run; r->cntT = cntT; r->cntV = cntV;
 }
+
+/* The compiler that built the C part, for the command's --version and
+   report: a string constant, no library */
+const char *paia_c_compiler(void) {
+#if defined(__clang__)
+  return "clang " __clang_version__;
+#elif defined(__GNUC__)
+  return "gcc " __VERSION__;
+#else
+  return "unknown C compiler";
+#endif
+}
