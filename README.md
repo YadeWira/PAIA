@@ -128,23 +128,29 @@ authenticate it (the hash catches accidents, not tampering).
 
 ## Against archivers
 
-One archive per set, 8 threads; every file extracted and compared. Size,
-then the time to write / extract. zpaq-std + PAIA: zpaq-std 2.7.0 with
-PAIA's plugin, `-m3 -sat:paia:...`; 7-Zip 25.01 `-mx9` and zpaq-std
-`-m5` without PAIA for reference. There is no 7-Zip plugin yet.
+One archive per folder, 8 threads; every file extracted and compared.
+Size, then the time to write / extract. zpaq-std 2.7.0 with each method
+alone and with PAIA's plugin added (`-sat:paia:...`), the same method on
+both sides; 7-Zip 25.01 `-mx9` for reference. The mixed folder is the five
+sets (124 files, 88.4 MB) among 105 other files of the sample corpus
+(text, documents, images, audio, programs: 23.4 MB). There is no 7-Zip
+plugin yet.
 
-| set | zpaq-std + PAIA | 7-Zip | zpaq-std -m5 |
-|---|---|---|---|
-| GIF (39) | **44.82%**, 56.9 / 23.2 s | 96.61%, 6.6 / 0.9 s | 94.53%, 435.2 / 330.6 s |
-| FLI/FLC (28) | **31.60%**, 21.5 / 10.0 s | 46.41%, 3.7 / 0.4 s | 38.69%, 67.9 / 69.2 s |
-| ANI (26) | **7.15%**, 19.9 / 9.5 s | 9.15%, 2.8 / 0.1 s | 7.90%, 35.0 / 31.1 s |
-| IFF ANIM (14) | **45.23%**, 8.6 / 4.6 s | 52.17%, 1.0 / 0.2 s | 49.76%, 25.4 / 26.1 s |
-| WebP (17) | **85.55%**, 28.8 / 11.0 s | 95.44%, 1.2 / 0.2 s | 95.21%, 82.5 / 82.0 s |
+| folder | zpaq-std -m1 | -m1 + PAIA | zpaq-std -m5 | -m5 + PAIA | 7-Zip -mx9 |
+|---|---|---|---|---|---|
+| mixed (229 files, 111.8 MB) | 72.49%, 1.2 / 0.4 s | 46.61%, 105.1 / 29.2 s | 62.79%, 224.5 / 238.1 s | **43.42%**, 174.3 / 85.9 s | 65.55%, 14.3 / 1.7 s |
+| GIF (39) | 100.07%, 0.4 / 0.2 s | 44.82%, 44.2 / 17.0 s | 94.53%, 159.9 / 160.8 s | **44.82%**, 44.2 / 16.8 s | 96.61%, 3.8 / 0.7 s |
+| FLI/FLC (28) | 62.63%, 0.9 / 0.3 s | 32.42%, 18.2 / 8.3 s | 38.69%, 53.4 / 54.1 s | **31.44%**, 19.5 / 8.5 s | 46.41%, 2.9 / 0.4 s |
+| ANI (26) | 17.79%, 0.4 / 0.1 s | 8.63%, 16.8 / 8.9 s | 7.90%, 22.5 / 22.0 s | **6.80%**, 20.4 / 8.3 s | 9.15%, 2.5 / 0.1 s |
+| IFF ANIM (14) | 63.46%, 0.3 / 0.2 s | 45.23%, 7.3 / 4.0 s | 49.76%, 18.7 / 19.7 s | **45.23%**, 7.2 / 3.7 s | 52.17%, 0.9 / 0.2 s |
+| WebP (17) | 95.54%, 0.3 / 0.3 s | 85.55%, 25.7 / 9.9 s | 95.21%, 56.7 / 62.5 s | **85.55%**, 25.5 / 10.5 s | 95.44%, 1.2 / 0.2 s |
 
-zpaq-std + PAIA is the smallest on every set, and faster than zpaq-std
-`-m5`: on the GIFs, less than half the size of either, in about an eighth
-of `-m5`'s time. 7-Zip is much faster, but saves under 5% on the GIFs and
-the WebPs.
+With PAIA, zpaq-std's archive of the mixed folder is 36% smaller with
+`-m1` and 31% with `-m5`, and `-m5` with PAIA writes it faster than `-m5`
+alone: what PAIA takes skips `-m5`'s slow model. Beside `-m1` it costs
+time (105 s against 1 s), as PAIA's model is slow. Every set gets
+smaller with either method; on the GIFs, the archive is less than half of
+7-Zip's or zpaq-std's.
 
 ## In 7-Zip and zpaq-std
 
