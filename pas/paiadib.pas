@@ -81,7 +81,8 @@ end;
 { ---------------- finding the bitmaps ---------------- }
 
 procedure AddIcon(const d: TBytes; off, size: SizeInt; var r: TDibs; var n: Integer);
-var cnt, k, w, h, bpp, colors: Integer; e, io, isz, hs, pix, need: SizeInt;
+var cnt, k, w, h, bpp, colors: Integer; e, pix, need: SizeInt;
+    io, isz, hs: Int64;   { 32-bit fields: Int64, so that none wraps in i386's SizeInt }
     comp: Int64; dib: TDib;
 begin
   if size < 6 then Exit;
@@ -119,7 +120,7 @@ begin
 end;
 
 procedure Walk(const d: TBytes; q, stop: SizeInt; var r: TDibs; var n: Integer; depth: Integer);
-var sz: SizeInt;
+var sz: Int64;   { a chunk's 32-bit size: in i386's SizeInt, 4 GB-ish wraps negative }
 begin
   while q + 8 <= stop do begin
     sz := Le32(d, q + 4);
@@ -133,7 +134,7 @@ begin
 end;
 
 function FindDibs(const d: TBytes): TDibs;
-var n: Integer; stop: SizeInt;
+var n: Integer; stop: Int64;
 begin
   Result := nil; n := 0;
   if (Length(d) < 12) or (d[0] <> Ord('R')) or (d[1] <> Ord('I')) or (d[2] <> Ord('F'))

@@ -34,3 +34,8 @@ with one (no spatial noise shaping, no filter), and a truncated file.
 because of an error of its own: the fallback is right for users, but it
 would hide a bug (it hid one: a repeated frame made the two sides see
 different previous frames).
+
+`hugesize/`: written by `tools/mkhugesize.py`: an ANI, an IFF ANIM, a WebP
+and a FLC, each with a chunk that declares a size of nearly 4 GB (2 GB for
+the FLC). On 32-bit builds the parsers kept such a size in a SizeInt,
+where it wrapped negative, and read before their buffer.

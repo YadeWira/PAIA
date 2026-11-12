@@ -865,7 +865,7 @@ end;
 
 procedure Walk(const d: TBytes; q, stop: SizeInt; fw, fh: Integer; var r: TWebpStreams;
                var n: Integer; depth: Integer; var fi: TFrameInfo);
-var sz: SizeInt; sub: TFrameInfo;
+var sz: Int64; sub: TFrameInfo;   { 32-bit size: Int64, no wrap on i386 }
 begin
   while q + 8 <= stop do begin
     sz := Le32(d, q + 4);
@@ -890,7 +890,7 @@ begin
 end;
 
 function FindWebpStreams(const d: TBytes): TWebpStreams;
-var n: Integer; stop: SizeInt; fi: TFrameInfo;
+var n: Integer; stop: Int64; fi: TFrameInfo;
 begin
   Result := nil; n := 0;
   if (Length(d) < 12) or not IsId(d, 0, 'RIFF') or not IsId(d, 8, 'WEBP') then Exit;

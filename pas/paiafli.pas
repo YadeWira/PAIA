@@ -116,7 +116,8 @@ end;
 { ---------------- finding the chunks ---------------- }
 
 function FindFliChunks(const d: TBytes): TFliChunks;
-var magic, w, h, depth, n, j: Integer; q, r, len, size, ss, fend: SizeInt; ct: Integer;
+var magic, w, h, depth, n, j: Integer; q, r, len, fend: SizeInt; ct: Integer;
+    size, ss: Int64;   { 32-bit sizes: Int64, so that q + size never wraps on i386 }
     c: TFliChunk;
 begin
   Result := nil; n := 0;

@@ -112,7 +112,7 @@ type
 
 procedure WalkForm(const d: TBytes; q, stop: SizeInt; var fs: TFindState;
                    var r: TIffChunks; var n: Integer; depth: Integer);
-var sz: SizeInt; c: TIffChunk;
+var sz: Int64; c: TIffChunk;   { 32-bit size: Int64, no wrap on i386 }
 begin
   while q + 8 <= stop do begin
     sz := Be32(d, q + 4);
@@ -154,7 +154,7 @@ begin
 end;
 
 function FindIffChunks(const d: TBytes): TIffChunks;
-var n: Integer; fs: TFindState; stop: SizeInt;
+var n: Integer; fs: TFindState; stop: Int64;
 begin
   Result := nil; n := 0;
   if (Length(d) < 12) or not IsId(d, 0, 'FORM') or not IsId(d, 8, 'ANIM') then Exit;
