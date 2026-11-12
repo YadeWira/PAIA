@@ -45,25 +45,29 @@ the test samples went through `-sat` with no failure (the plugin took
 ## `+rcmd`: what PAIA does not take
 
 With `-sa:...+rcmd` or `-rcmd` (zpaq-std 2.9.0), the files of a codec's
-format that it does not take go with the method its card recommends, the
-rest with the user's `-m`/`-ma`. PAIA's cards carry only `fallback_m`:
-ZPAQ's own methods beat every `-ma` codec on all five formats, and
-zpaq-std would take a `fallback_ma` entry before them.
+format that it does not take (its detect answers 2: the format's header,
+nothing PAIA takes in it) go with the method its card recommends, the
+rest with the user's `-m`/`-ma`. PAIA's cards carry only `fallback_m`: no
+`-ma` codec is worth it on any of the five formats, and zpaq-std would
+take a `fallback_ma` entry first.
 
-Measured on 11/11/2026 with zpaq-std 2.8.0 (Linux x86-64, 8 threads). The
-sample corpus has only three files of these formats the plugin refuses
-(two small GIFs and an ANI), so the files are those three and the
-truncated (50, 10, 2 %) and bit-flipped copies of the corpus's files the
-plugin refuses (`scripts/compare/rcmd_rejects.py`, `rcmd.sh`); every file
-extracted identical. Size, seconds to write / extract:
+Measured on 12/11/2026 with zpaq-std 2.9.0-rc2 (Linux x86-64, 8 threads).
+The sample corpus has only three files of these formats the plugin
+refuses (two small GIFs and an ANI), so the files are, for each distinct
+file of the corpus, the first refused of: the file, a bit flipped in its
+first 4 KB, the file cut to 50, 10 or 2 % (`scripts/compare/rcmd_rejects.py`,
+`rcmd.sh`). One a file: copies of the same file would share most of their
+bytes, which a method that sees them together exploits and a file not
+taken in the wild does not offer. Every file extracted identical. Size,
+seconds to write / extract:
 
-| format | files | in | best `-m` | best `-ma` | `fallback_m` |
+| format | files | in | `-m` | best `-ma` | `fallback_m` |
 |---|---|---|---|---|---|
-| GIF | 81 | 10,853,946 | `-m4` 8,762,006 (0.6 / 0.3), `-m5` 8,534,168 (38.7 / 36.5) | `flzma2:10` 8,747,517 (2.2 / 0.4), `kanzi:9` 8,654,504 (11.6 / 12.4) | 4,5,1,2,3 |
-| FLI/FLC | 49 | 598,413 | `-m5` 179,736 (1.4 / 1.5), `-m4` 188,591 (0.5 / 0.5) | `lzma:9` 208,387 (0.1 / 0.2) | 5,4,3,2,1 |
-| ANI | 89 | 8,131,337 | `-m5` 547,612 (13.3 / 12.2) | `kanzi:9` 570,121 (3.2 / 3.2), `lzma:9` 629,667 (1.6 / 0.2) | 5,4,3,2,1 |
-| IFF ANIM | 15 | 305,830 | `-m5` 97,566 (0.8 / 0.8), `-m4` 99,655 (0.3 / 0.3) | `lz:9` 100,121 (0.1 / 0.2) | 5,4,3,2,1 |
-| WebP | 24 | 10,048,960 | `-m4` 5,470,849 (0.4 / 0.2), `-m5` 5,458,106 (26.7 / 28.9) | `flzma2:10` 5,869,337 (0.6 / 0.2) | 4,5,2,3,1 |
+| GIF | 27 | 8,745,597 | `-m1` 8,755,912 (0.1 / 0.1), `-m5` 8,527,298 (42.4 / 44.1) | `bzip3:9` 8,683,411 (1.8 / 1.9) | 1,5 |
+| FLI/FLC | 29 | 521,695 | `-m5` 177,145 (1.5 / 1.5), `-m4` 186,152 (0.4 / 0.5) | `lz:9` 206,105 (0.2 / 0.1) | 5,4,3 |
+| ANI | 28 | 6,484,077 | `-m5` 540,613 (15.1 / 12.9), `-m4` 698,401 (4.0 / 4.2) | `kanzi:9` 563,661 (3.2 / 3.4), `lzma:9` 623,660 (1.5 / 0.2) | 5,4,3 |
+| IFF ANIM | 10 | 291,027 | `-m5` 96,830 (1.0 / 1.0), `-m4` 98,970 (0.3 / 0.3) | `lz:9` 99,632 (0.1 / 0.1) | 5,4,3 |
+| WebP | 8 | 5,458,379 | `-m1` 5,464,748 (0.1 / 0.1), `-m5` 5,453,703 (24.9 / 25.9) | `lzma:9` 5,464,736 (1.2 / 0.1) | 1,5 |
 
-GIF and WebP put `-m4` first: `-m5` is 2.6 % and 0.2 % smaller there, but
-about 70 times slower.
+What PAIA does not take of a GIF or a WebP is compressed data already (LZW,
+VP8): `-m5` gains 2.5 % and 0.2 % there, at 300 times `-m1`'s time.

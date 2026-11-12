@@ -18,12 +18,13 @@
     format's end; it does not verify the stream itself, since zpaq-std
     decodes every block and compares before writing it. decompress() is
     paiacodec.Decompress with zpaq-std's exact original size as the cap.
-  - zpaqstd_detect_v1: 1 if the codec named takes the file, from its bytes
-    only: the format's header at its start (a GIF's within the first 4 KB:
-    after a MacBinary header, say), and something of it that PAIA
+  - zpaqstd_detect_v1: from the file's bytes only, 1 if the codec named
+    takes it: the format's header at its start (a GIF's within the first
+    4 KB: after a MacBinary header, say), and something of it that PAIA
     takes (GIF images, FLIC pixel chunks, ANI bitmaps, IFF ANIM frames,
-    WebP VP8 or VP8L streams). Never reads outside the file; any error is
-    a no.
+    WebP VP8 or VP8L streams); 2 if it has the header but is not taken
+    (for zpaq-std's +rcmd); else 0. Never reads outside the file; any
+    error is a 0.
   - No global state but read-only tables: several threads may call at once.
 
   No ZPAQL decoder yet (data(ZS_DATA_ZPAQL) is nil): enough for -sat, which
@@ -161,6 +162,34 @@ begin
   end;
 end;
 
+{ Whether the bytes are of the format by their header alone: what
+  zpaqstd_detect_v1 answers 2 for when PAIA does not take them (zpaq-std's
+  +rcmd then gives them the method the codec's card recommends). }
+function IsFormat(fmt: Integer; d: PByte; n: SizeUInt): Boolean;
+  function Tag(off: SizeUInt; const t: AnsiString): Boolean;
+  begin
+    Result := (off + 4 <= n) and (CompareByte(d[off], t[1], 4) = 0);
+  end;
+var p, last: SizeInt;
+begin
+  Result := False;
+  case fmt of
+    F_GIF: begin
+      last := SizeInt(n) - 6;
+      if last > 4096 then last := 4096;
+      for p := 0 to last do
+        if (CompareByte(d[p], 'GIF8', 4) = 0) and ((d[p + 4] = Ord('7')) or (d[p + 4] = Ord('9')))
+           and (d[p + 5] = Ord('a')) then Exit(True);
+    end;
+    F_FLC:
+      { FLI, FLC and their variants: the magic after the 32-bit size }
+      Result := (n >= 6) and (d[5] = $AF) and (d[4] in [$11, $12, $30, $31, $44]);
+    F_ANI: Result := Tag(0, 'RIFF') and Tag(8, 'ACON');
+    F_ANIM: Result := Tag(0, 'FORM') and Tag(8, 'ANIM');
+    F_WEBP: Result := Tag(0, 'RIFF') and Tag(8, 'WEBP');
+  end;
+end;
+
 function FormatOf(const name: AnsiString): Integer;
 begin
   if name = 'paiagif1' then Result := F_GIF
@@ -174,12 +203,17 @@ end;
 function zpaqstd_detect_v1(codecName: PChar; src: Pointer; n: SizeUInt): LongInt; cdecl;
 var fmt: Integer;
 begin
+  { 1: PAIA takes it; 2: of the codec's format, but not taken (zpaq-std
+    before 2.9.0, and without +rcmd, reads 2 as 0); 0: another format }
   Result := 0;
-  if (codecName = nil) or (src = nil) or (n < 12) or (n > MAX_BLOCK) then Exit;
+  if (codecName = nil) or (src = nil) or (n < 12) then Exit;
   try
     fmt := FormatOf(AnsiString(codecName));
     if fmt < 0 then Exit;
-    if Takes(fmt, Bytes(src, n)) then Result := 1;
+    { Takes asks for at least this header (a GIF's within its first 4 KB) }
+    if not IsFormat(fmt, PByte(src), n) then Exit;
+    Result := 2;
+    if (n <= MAX_BLOCK) and Takes(fmt, Bytes(src, n)) then Result := 1;
   except
     Result := 0;
   end;
@@ -196,8 +230,8 @@ begin
     'format=' + what + ', recompressed by PAIA (its codec stream, version 8; not frozen until PAIA 1.0.0)'#10 +
     'notes=lossless; experimental; no ZPAQL decoder yet, so -sat only'#10 +
     { +rcmd: zpaq-std's method for the files of this format the codec does
-      not take. Measured on them (doc/PLUGIN.md): ZPAQ's own methods beat
-      every -ma codec on all five formats, so no fallback_ma line. }
+      not take. Measured on them (doc/PLUGIN.md): no -ma codec is worth it
+      on any of the five formats, so no fallback_ma line. }
     'fallback_m=' + fallback + #10;
 end;
 
@@ -268,9 +302,9 @@ exports
 
 begin
   IsMultiThread := True;
-  Info[F_GIF] := Card('paiagif1', 'GIF', '4,5,1,2,3');
-  Info[F_FLC] := Card('paiaflc1', 'FLI and FLC', '5,4,3,2,1');
-  Info[F_ANI] := Card('paiaani1', 'ANI (animated cursors)', '5,4,3,2,1');
-  Info[F_ANIM] := Card('paiaanim1', 'IFF ANIM', '5,4,3,2,1');
-  Info[F_WEBP] := Card('paiawebp1', 'WebP (VP8, VP8L, lossless alpha)', '4,5,2,3,1');
+  Info[F_GIF] := Card('paiagif1', 'GIF', '1,5');
+  Info[F_FLC] := Card('paiaflc1', 'FLI and FLC', '5,4,3');
+  Info[F_ANI] := Card('paiaani1', 'ANI (animated cursors)', '5,4,3');
+  Info[F_ANIM] := Card('paiaanim1', 'IFF ANIM', '5,4,3');
+  Info[F_WEBP] := Card('paiawebp1', 'WebP (VP8, VP8L, lossless alpha)', '1,5');
 end.
