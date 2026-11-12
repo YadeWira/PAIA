@@ -36,6 +36,7 @@ verified.
 | [PPA](https://github.com/YadeWira/PPA) | the PNG family (PNG, APNG, MNG, JNG) | [packPNG](https://github.com/YadeWira/packPNG) |
 | [PJA](https://github.com/YadeWira/PJA) | JPEG, JPEG-LS and JPEG 2000 | [packJPG](https://github.com/YadeWira/packJPG) |
 | [POA](https://github.com/YadeWira/POA) | Ogg (Vorbis, Opus, FLAC, Speex, Theora) | (new) |
+| [PDA](https://github.com/YadeWira/PDA) | documents (PDF, Office, OpenDocument, EPUB, CHM, ...) | (new) |
 | **PAIA** | animated images (GIF, WebP, FLI/FLC, ANI, IFF ANIM) | (new) |
 
 ## What it handles
