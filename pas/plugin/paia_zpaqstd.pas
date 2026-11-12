@@ -186,7 +186,7 @@ begin
 end;
 
 { the codecs' cards, for zpaq-std's codecinfoex }
-function Card(const name, what: AnsiString): AnsiString;
+function Card(const name, what, fallback: AnsiString): AnsiString;
 begin
   Result := 'name=' + name + #10 +
     'version=' + PAIA_VERSION + ' (' + STREAM + ')'#10 +
@@ -194,7 +194,11 @@ begin
     'repo=https://github.com/YadeWira/PAIA'#10 +
     'license=MIT'#10 +
     'format=' + what + ', recompressed by PAIA (its codec stream, version 8; not frozen until PAIA 1.0.0)'#10 +
-    'notes=lossless; experimental; no ZPAQL decoder yet, so -sat only'#10;
+    'notes=lossless; experimental; no ZPAQL decoder yet, so -sat only'#10 +
+    { +rcmd: zpaq-std's method for the files of this format the codec does
+      not take. Measured on them (doc/PLUGIN.md): ZPAQ's own methods beat
+      every -ma codec on all five formats, so no fallback_ma line. }
+    'fallback_m=' + fallback + #10;
 end;
 
 var
@@ -264,9 +268,9 @@ exports
 
 begin
   IsMultiThread := True;
-  Info[F_GIF] := Card('paiagif1', 'GIF');
-  Info[F_FLC] := Card('paiaflc1', 'FLI and FLC');
-  Info[F_ANI] := Card('paiaani1', 'ANI (animated cursors)');
-  Info[F_ANIM] := Card('paiaanim1', 'IFF ANIM');
-  Info[F_WEBP] := Card('paiawebp1', 'WebP (VP8, VP8L, lossless alpha)');
+  Info[F_GIF] := Card('paiagif1', 'GIF', '4,5,1,2,3');
+  Info[F_FLC] := Card('paiaflc1', 'FLI and FLC', '5,4,3,2,1');
+  Info[F_ANI] := Card('paiaani1', 'ANI (animated cursors)', '5,4,3,2,1');
+  Info[F_ANIM] := Card('paiaanim1', 'IFF ANIM', '5,4,3,2,1');
+  Info[F_WEBP] := Card('paiawebp1', 'WebP (VP8, VP8L, lossless alpha)', '4,5,2,3,1');
 end.
