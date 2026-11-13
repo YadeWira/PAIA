@@ -22,7 +22,7 @@ type
   TCpuPath = (cpPascal, cpC);
 
 const
-  PAIA_VERSION = '0.1.0';
+  PAIA_VERSION = '0.2.0';
   CPU_PATH_NAMES: array[TCpuPath] of string = ('pascal', 'c');
   ISSUES_URL = 'https://github.com/YadeWira/PAIA/issues';
 

@@ -134,7 +134,7 @@ check passed. CI runs it on every platform, for the three builds.
 ### `paia --version`
 
 ```
-paia 0.1.0
+paia 0.2.0
 commit: 41129dd
 built: 2026/11/07
 fpc: 3.2.2

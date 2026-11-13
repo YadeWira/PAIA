@@ -50,7 +50,7 @@ const
   { zpaq-std hands the codecs files up to 64 MB; above this, refuse }
   MAX_BLOCK = SizeUInt(1) shl 30;
   LEVEL = 1;
-  PAIA_VERSION = '0.1.0';
+  PAIA_VERSION = '0.2.0';
   STREAM = 'paia stream v8';
 
   F_GIF = 0; F_FLC = 1; F_ANI = 2; F_ANIM = 3; F_WEBP = 4;
