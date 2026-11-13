@@ -91,6 +91,23 @@ done
 [ "$m" -ge 9 ] || { echo "FAIL: only $m files of 0.1.0"; exit 1; }
 echo "$m files written by 0.1.0: extracted byte for byte"
 
+echo "== a name in UTF-8, in what the command writes to a file"
+# --json, list and report, to a file, carry the name as UTF-8 on every system
+# (on Windows the console's code page would turn it into "?": paiaconsole)
+U="$OUT/u8"; rm -rf "$U"; mkdir -p "$U"
+name='señal 動画.gif'
+cp tests/gif/anim.gif "$U/$name"
+"$OUT/paia$EXE" a -q --json -o "$U/" "$U/$name" > "$U/a.json" || { echo "FAIL: a on a UTF-8 name"; exit 1; }
+"$OUT/paia$EXE" list "$U/señal 動画.paia" > "$U/list.txt" || { echo "FAIL: list on a UTF-8 name"; exit 1; }
+"$OUT/paia$EXE" report "$U/$name" > "$U/report.txt" || { echo "FAIL: report on a UTF-8 name"; exit 1; }
+for f in a.json list.txt report.txt; do
+  LC_ALL=C grep -q "$(printf 'se\303\261al \345\213\225\347\224\273')" "$U/$f" \
+    || { echo "FAIL: $f does not carry the name in UTF-8"; cat "$U/$f"; exit 1; }
+done
+"$OUT/paia$EXE" x -q -f -o "$U/back.gif" "$U/señal 動画.paia" && cmp -s tests/gif/anim.gif "$U/back.gif" \
+  || { echo "FAIL: the UTF-8 name does not come back"; exit 1; }
+echo "a.json, list and report: the name in UTF-8"
+
 echo "== the streams"
 (cd "$OUT/p/paia" && for f in */*.paia; do $SHA "$f"; done | sed 's/ [ *]/  /' | sort) > "$OUT/streams.txt"
 $SHA "$OUT/streams.txt" | cut -c1-64 > hash.txt

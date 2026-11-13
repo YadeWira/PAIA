@@ -263,6 +263,11 @@ The summary: `command`, `files`, `failed`, `bugs`, `bytes_in`, `bytes_out`,
   nor PowerShell does it for a program: `paia a anims\*.gif` takes every
   file that matches, in order of name. A pattern that matches nothing fails
   as `no file matches`. Names are read in UTF-16 and kept in UTF-8.
+- **What `paia` prints is UTF-8, and every character shows on a Windows
+  console.** To a console it writes UTF-16 (`WriteConsoleW`), without
+  changing the console's code page; to a file or a pipe, UTF-8, so `--json`
+  and `report` read the same on every system. Standard output and error
+  are decided apart: `2> err.txt` with the output on the console works.
 - **A write the system refuses is reported in its own words**, with the
   error number.
 
