@@ -148,10 +148,12 @@ them (unlike GIF's).
 
 ## FLI and FLC (`pas/paiafli.pas`)
 
-Autodesk Animator's FLICs (8 bits a pixel) keep their frames as chunks of
-simple codes: BYTE_RUN (a whole frame, run-length coded), DELTA_FLI (byte
-runs against the previous frame), DELTA_FLC (the same in 16-bit words),
-COPY and BLACK. These are not decoded and rebuilt as GIF's LZW is: each
+Autodesk Animator's FLICs keep their frames as chunks of simple codes:
+BYTE_RUN (a whole frame, run-length coded), DELTA_FLI (byte runs against
+the previous frame), DELTA_FLC (the same in 16-bit words), COPY and BLACK;
+the 15-, 16- and 24-bit FLCs (magic 0xAF12, and 0xAF44 from Dave's Targa
+Animator) the same with pixels of 2 or 3 bytes: DTA_BRUN, DTA_LC and
+DTA_COPY. These are not decoded and rebuilt as GIF's LZW is: each
 chunk's bytes are coded **in their own order, field by field**, the coder
 knowing at every byte what it is:
 
@@ -168,8 +170,33 @@ So any chunk comes back exactly, whatever its encoder did (a wrong packet
 count in a BYTE_RUN line, padding, runs past the edge): there is nothing to
 predict about the encoder and nothing to check but the whole file. A
 BYTE_RUN line's packet count, which decoders ignore, is coded after the
-line's packets, knowing how many there were. Palettes, stamps, prefix
-chunks, 16-bit FLICs and unknown chunks stay with the plain bytes.
+line's packets, knowing how many there were. A pixel of 2 or 3 bytes is
+coded a byte at a time, each with the same byte of its neighbours, and the
+pixel's lower byte for the next one.
+
+Also taken: palette changes (COLOR_256, COLOR_64: each value with the one
+it replaces as context), the postage stamp (PSTAMP, in the prefix chunk
+0xF100 or a frame: a small BYTE_RUN or COPY image of its own), and sound:
+some FLIs carry 16-bit samples in a chunk "DS" (0x5344) in each frame,
+coded as the difference from 2 s[-1] - s[-2], modulo 65536 so that any
+value comes back, the previous difference's size as context, across the
+frames. Other chunks stay with the plain bytes.
+
+| 29 FLICs of the sample corpus (18.1 MB) | total | |
+|---|---|---|
+| PAIA 0.0.4 | 5,860,651 | 32.43% |
+| PAIA 0.0.11 (learning rates) | 5,614,008 | **31.07%** |
+| xz -9e | 8,394,672 | 46.45% |
+
+With stream 9 (palettes, stamps, sound, 16-bit FLCs), measured on
+13/11/2026: the benchmark's FLIC set (28 files, 18.0 MB) 30.99% with
+0.2.0 and 30.58% now; all 33 FLICs of the corpus with 8-bit pixels,
+32.47% and 30.87%, most of it the sound of LSATBURN.FLC (1,189,507 ->
+1,116,548 bytes); the corpus's 16-bit FLC, flyby.flh, 44,355 -> 38,153
+bytes (xz: 49,640). Every file came back the same.
+
+| (0.2.0, before) | | |
+|---|---|---|
 
 | 29 FLICs of the sample corpus (18.1 MB) | total | |
 |---|---|---|

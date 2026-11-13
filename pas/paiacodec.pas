@@ -41,7 +41,8 @@
         varint  chunk; if 0: the sub-block count and every length
         pixels  (TPixelModel), over the canvas the stream's images compose
       a FLIC chunk:
-        varint  a new FLIC (then its width and height)
+        varint  a new FLIC (then its width, height and, version 9, bytes a
+                pixel)
         varint  chunk type, data length
         data    (paiafli.CodeChunk)
       an ANI bitmap:
@@ -429,16 +430,17 @@ begin
           if newStream then begin
             fli.width := Bounded(V(fli.width), 65535);
             fli.height := Bounded(V(fli.height), 65535);
-            if (fli.width < 1) or (fli.height < 1) or
-               (SizeInt(fli.width) * fli.height > MAX_PIXELS) then
+            fli.bpp := Bounded(V(fli.bpp), 3);
+            if (fli.width < 1) or (fli.height < 1) or (fli.bpp < 1) or
+               (SizeInt(fli.width) * fli.height * fli.bpp > MAX_PIXELS) then
               raise Exception.Create('paiacodec: damaged stream');
             fimg.Free;
-            fimg := TFliImage.Create(fli.width, fli.height);
+            fimg := TFliImage.Create(fli.width, fli.height, fli.bpp);
             fliStream := fli.stream;
           end;
           if fimg = nil then raise Exception.Create('paiacodec: damaged stream');
           if fm = nil then fm := TFliModel.Create(pixelBits);
-          fli.ctype := Bounded(V(fli.ctype), 255);
+          fli.ctype := Bounded(V(fli.ctype), 65535);
           flen := Bounded(V(Length(fdata)), maxOut);
           CodeChunk(cd, fm, fimg, fli.ctype, fdata, flen);
           Continue;

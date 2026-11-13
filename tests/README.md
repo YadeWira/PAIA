@@ -11,8 +11,11 @@ after the other, and a file that is not a GIF.
 `fli/`: FLI and FLC files written by `tools/mkflic.py` (no encoder of
 ours, nor ffmpeg nor ImageMagick, writes FLICs): every pixel chunk PAIA
 takes (BYTE_RUN, DELTA_FLI, DELTA_FLC with an odd width's last-byte word,
-COPY, BLACK), palettes, an unknown chunk, and a truncated file. ffmpeg
-decodes all of them.
+COPY, BLACK), palettes, an unknown chunk, a prefix chunk with a postage
+stamp, 16-bit FLCs of magic 0xAF44 and 0xAF12 (DTA_BRUN, DTA_LC, DTA_COPY,
+one of an odd width), an FLI with sound in each frame, and a truncated
+file. `tools/check_flic.py` checks that FFmpeg decodes each to the frames
+meant.
 
 `ani/`: animated cursors written by `tools/mkani.py` (none of the tools at
 hand writes ANI): frames of 32, 24, 4 and 1 bits a pixel, a CUR with

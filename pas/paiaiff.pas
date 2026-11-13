@@ -745,6 +745,7 @@ procedure WalkDeltaDE(var wk: TWalk; long: Boolean);
 var k, b, unitB, sameMode, uniqMode: Integer; ptr, q, entries, e, opc, off, il, pitch, ppb, r: Int64;
     v: array[0..3] of Integer;
 begin
+  FillChar(v, SizeOf(v), 0);
   sameMode := M_SAME; uniqMode := M_UNIQ;
   pitch := Int64(wk.st.rowBytes) * wk.st.np;
   ppb := (wk.st.w + 7) div 8;

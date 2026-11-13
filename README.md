@@ -44,8 +44,8 @@ verified.
 - **GIF**: every image of every GIF stream in a file, from any LZW encoder,
   rebuilt bit for bit from its pixels, each animation's canvas composed
   (offsets, transparency, disposal, interlacing).
-- **FLI and FLC** (8 bits): BYTE_RUN, DELTA_FLI, DELTA_FLC, COPY and BLACK
-  chunks, field by field.
+- **FLI and FLC** (8, 15, 16 and 24 bits): every pixel chunk, field by
+  field, the palettes, the postage stamp, and the sound some FLIs carry.
 - **ANI**: the bitmaps of its cursor and icon frames, 1 to 32 bits.
 - **IFF ANIM**: the first frame and the deltas of every method players
   read: 5 (Byte Vertical Delta), 3, 7, 8, 74 ("J"), 100, 101 and 108.
