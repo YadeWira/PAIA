@@ -49,7 +49,10 @@ format that it does not take (its detect answers 2: the format's header,
 nothing PAIA takes in it) go with the method its card recommends, the
 rest with the user's `-m`/`-ma`. PAIA's cards carry only `fallback_m`: no
 `-ma` codec is worth it on any of the five formats, and zpaq-std would
-take a `fallback_ma` entry first.
+take a `fallback_ma` entry first. Older zpaq-std reads the 2 as 0: with
+2.7.2 and 2.8.0 the archive is byte for byte the one the plugin made
+before it answered 2 (checked on 13/11/2026, 124 files, `-timestamp`
+fixed). With 2.9.0 as published, the same as with its rc5.
 
 Measured on 12/11/2026 with zpaq-std 2.9.0-rc2 (Linux x86-64, 8 threads).
 The sample corpus has only three files of these formats the plugin
