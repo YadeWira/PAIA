@@ -2,10 +2,9 @@
 
   An ANIM is a FORM ANIM of FORM ILBMs: the first holds the first frame
   (BMHD, CMAP, BODY: bitplanes, row by row, plane by plane, usually
-  ByteRun1-compressed), each other one a delta (ANHD, DLTA). The deltas
-  taken are method 5, Byte Vertical Delta, by far the most used: for each
-  plane a pointer, and for each column of bytes a list of operations going
-  down the rows (skip rows, repeat a byte, or take bytes as they are).
+  ByteRun1-compressed), each other one a delta (ANHD, DLTA). Every delta
+  method FFmpeg reads is taken: 5 (Byte Vertical Delta, by far the most
+  used), 3, 7, 8 (short and long), 74 ("J"), 100, 101 and 108 (doc/CODEC.md).
 
   As for FLICs, the bytes of a BODY and of a DLTA are coded in their own
   order, field by field: structure to a token model, bitplane bytes to a
@@ -15,8 +14,8 @@
   buffered, as players do: a delta changes the frame two back, unless its
   ANHD says one back.
 
-  Not taken (they stay as plain bytes): other delta methods, BODYs with a
-  mask plane or other compression, chunky (deep) ILBMs. }
+  Not taken (they stay as plain bytes): BODYs with a mask plane or other
+  compression, chunky (deep) ILBMs. }
 unit paiaiff;
 
 {$I paia.inc}
@@ -29,12 +28,20 @@ unit paiaiff;
 
 interface
 
-uses SysUtils, paiaarith, paiadib;
+uses SysUtils, Math, paiaarith, paiadib;
 
 const
   IK_BODY_RAW = 0;
   IK_BODY_RLE = 1;
-  IK_DLTA5 = 2;
+  IK_DLTA5 = 2;      { Byte Vertical Delta }
+  IK_DLTA3 = 3;      { short horizontal delta }
+  IK_DLTA7 = 4;      { short or long vertical delta, data apart }
+  IK_DLTA8 = 5;      { short or long vertical delta, data inline }
+  IK_DLTAJ = 6;      { method 74, "J": Eric Graham's }
+  IK_DLTAD = 7;      { method 100: long vertical runs }
+  IK_DLTAE = 8;      { method 101: word vertical runs }
+  IK_DLTAL = 9;      { method 108 }
+  IK_LAST = IK_DLTAL;
 
 type
   TIffChunk = record
@@ -43,6 +50,7 @@ type
     width, height, planes: Integer;
     interleave: Integer;             { ANHD: 0 = two frames back, 1 = one back }
     xorMode: Boolean;                { ANHD bits, bit 1 }
+    bits: Int64;                     { ANHD bits: bit 0 long data (methods 7, 8, 108) }
   end;
   TIffChunks = array of TIffChunk;
 
@@ -66,6 +74,7 @@ type
   end;
 
 function FindIffChunks(const d: TBytes): TIffChunks;
+function IsDelta(sub: Integer): Boolean; inline;
 
 procedure CodeIffChunk(cd: TCoder; tm: TTokenModel; pm: TDibModel; st: TAnimState;
                        const c: TIffChunk; var data: TBytes; len: SizeInt);
@@ -108,6 +117,7 @@ type
     haveBmhd: Boolean;
     op, interleave: Integer;
     xorMode: Boolean;
+    bits: Int64;
   end;
 
 procedure WalkForm(const d: TBytes; q, stop: SizeInt; var fs: TFindState;
@@ -119,7 +129,7 @@ begin
     if q + 8 + sz > stop then Exit;
     if IsId(d, q, 'FORM') then begin
       if (depth < 3) and (sz >= 4) then begin
-        fs.op := -1; fs.interleave := 0; fs.xorMode := False;
+        fs.op := -1; fs.interleave := 0; fs.xorMode := False; fs.bits := 0;
         WalkForm(d, q + 12, q + 8 + sz, fs, r, n, depth + 1);
       end;
     end else if IsId(d, q, 'BMHD') and (sz >= 20) then begin
@@ -132,18 +142,29 @@ begin
       fs.op := d[q + 8];
       { operation, mask, w, h, x, y, abstime, reltime, interleave, pad, bits }
       fs.interleave := d[q + 8 + 18];
-      fs.xorMode := (Be32(d, q + 8 + 20) and 2) <> 0;
+      fs.bits := Be32(d, q + 8 + 20);
+      fs.xorMode := (fs.bits and 2) <> 0;
     end else if (IsId(d, q, 'BODY') or IsId(d, q, 'DLTA')) and fs.haveBmhd and (sz > 0)
             and (fs.w > 0) and (fs.h > 0) and (fs.np >= 1) and (fs.np <= 8)
             and (SizeInt(fs.w) * fs.h <= SizeInt(1) shl 24) then begin
       c.dataStart := q + 8; c.dataEnd := q + 8 + sz;
       c.width := fs.w; c.height := fs.h; c.planes := fs.np;
-      c.interleave := fs.interleave; c.xorMode := fs.xorMode;
+      c.interleave := fs.interleave; c.xorMode := fs.xorMode; c.bits := fs.bits;
       c.sub := -1;
       if IsId(d, q, 'BODY') then begin
         if (fs.masking <> 1) and (fs.comp = 1) then c.sub := IK_BODY_RLE
         else if (fs.masking <> 1) and (fs.comp = 0) then c.sub := IK_BODY_RAW;
-      end else if fs.op = 5 then c.sub := IK_DLTA5;
+      end else
+        case fs.op of
+          5: c.sub := IK_DLTA5;
+          3: c.sub := IK_DLTA3;
+          7: c.sub := IK_DLTA7;
+          8: c.sub := IK_DLTA8;
+          74: c.sub := IK_DLTAJ;
+          100: c.sub := IK_DLTAD;
+          101: c.sub := IK_DLTAE;
+          108: c.sub := IK_DLTAL;
+        end;
       if c.sub >= 0 then begin
         if n >= Length(r) then SetLength(r, n * 2 + 16);
         r[n] := c; Inc(n);
@@ -151,6 +172,11 @@ begin
     end;
     q := q + 8 + sz + (sz and 1);
   end;
+end;
+
+function IsDelta(sub: Integer): Boolean; inline;
+begin
+  Result := sub >= IK_DLTA5;
 end;
 
 function FindIffChunks(const d: TBytes): TIffChunks;
@@ -230,8 +256,23 @@ type
     shown: TBytes;        { the frame shown before this one }
     buf: TBytes;
     pos, len: SizeInt;
+    done: array of Boolean;   { random access walks: the bytes coded so far }
     function More(k: SizeInt): Boolean; inline;
     function TB(kind, c1, c2: Integer): Integer;
+    { random access: the byte at `at`, coded the first time it is asked
+      for (a token, or a bitplane byte at plane p, column x, row y),
+      known after; -1 outside the data }
+    function TA(at: SizeInt; kind, c1, c2: Integer): Integer;
+    function PA(at: SizeInt; p, x, y, mode: Integer; xorIt: Boolean): Integer;
+    { big-endian structure words at `at`; -1 if any byte is outside }
+    function W16(at: SizeInt; kind, c: Integer): Int64;
+    function W32(at: SizeInt; kind, c: Integer): Int64;
+    { a bitplane byte at an offset into the interleaved bitmap (rows of all
+      planes, as ILBM keeps them), or at a byte of plane p }
+    function PIL(at: SizeInt; off: Int64; mode: Integer; xorIt: Boolean): Integer;
+    function PPL(at: SizeInt; p: Integer; off: Int64; mode: Integer; xorIt: Boolean): Integer;
+    { the bitmap byte at an interleaved offset set to v (a run's repeat) }
+    procedure FillIL(off: Int64; v: Integer; xorIt: Boolean);
     { a bitplane byte: plane p, byte column x, row y; returns the byte coded }
     function PX(p, x, y, mode: Integer; xorIt: Boolean): Integer;
   end;
@@ -277,6 +318,95 @@ begin
   if inside then begin
     if xorIt then tgt[i] := old[i] xor Result else tgt[i] := Result;
   end;
+end;
+
+function TWalk.TA(at: SizeInt; kind, c1, c2: Integer): Integer;
+var v: Integer;
+begin
+  if (at < 0) or (at >= len) then Exit(-1);
+  if done[at] then Exit(buf[at]);
+  if cd.encoding then v := buf[at] else v := 0;
+  Result := tm.Token(cd, v, kind, c1, c2);
+  buf[at] := Result;
+  done[at] := True;
+end;
+
+function TWalk.PA(at: SizeInt; p, x, y, mode: Integer; xorIt: Boolean): Integer;
+var c: array[0..8] of Integer; i: SizeInt; v, rb: Integer; inside: Boolean;
+begin
+  if (at < 0) or (at >= len) then Exit(-1);
+  rb := st.rowBytes;
+  inside := (p >= 0) and (p < st.np) and (x >= 0) and (x < rb) and (y >= 0) and (y < st.h);
+  i := 0;
+  if inside then i := SizeInt(p) * st.h * rb + SizeInt(y) * rb + x;
+  if done[at] then Result := buf[at]
+  else begin
+    c[0] := mode;
+    if inside then begin
+      c[1] := old[i];
+      if y > 0 then c[2] := tgt[i - rb] else c[2] := NONE;
+      if x > 0 then c[3] := tgt[i - 1] else c[3] := NONE;
+      if p > 0 then c[4] := tgt[i - SizeInt(st.h) * rb] else c[4] := NONE;
+      c[5] := shown[i];
+      c[6] := c[4];
+      c[7] := c[5]; c[8] := c[2];
+    end else
+      for v := 1 to 8 do c[v] := NONE;
+    if cd.encoding then v := buf[at] else v := 0;
+    Result := pm.Code(cd, v, c);
+    buf[at] := Result;
+    done[at] := True;
+  end;
+  if inside then begin
+    if xorIt then tgt[i] := old[i] xor Result else tgt[i] := Result;
+  end;
+end;
+
+function TWalk.W16(at: SizeInt; kind, c: Integer): Int64;
+var a, b: Integer;
+begin
+  a := TA(at, kind, c, 0);
+  if a < 0 then Exit(-1);
+  b := TA(at + 1, kind, c + 1, a);
+  if b < 0 then Exit(-1);
+  Result := a * 256 + b;
+end;
+
+function TWalk.W32(at: SizeInt; kind, c: Integer): Int64;
+var a, b: Int64;
+begin
+  a := W16(at, kind, c);
+  if a < 0 then Exit(-1);
+  b := W16(at + 2, kind, c + 2);
+  if b < 0 then Exit(-1);
+  Result := a * 65536 + b;
+end;
+
+function TWalk.PIL(at: SizeInt; off: Int64; mode: Integer; xorIt: Boolean): Integer;
+var pitch, r: Int64;
+begin
+  pitch := Int64(st.rowBytes) * st.np;
+  if (off < 0) or (pitch <= 0) or (off div pitch >= st.h) then
+    Exit(PA(at, -1, 0, 0, mode, xorIt));
+  r := off mod pitch;
+  Result := PA(at, r div st.rowBytes, r mod st.rowBytes, off div pitch, mode, xorIt);
+end;
+
+function TWalk.PPL(at: SizeInt; p: Integer; off: Int64; mode: Integer; xorIt: Boolean): Integer;
+begin
+  if (off < 0) or (off div st.rowBytes >= st.h) then
+    Exit(PA(at, -1, 0, 0, mode, xorIt));
+  Result := PA(at, p, off mod st.rowBytes, off div st.rowBytes, mode, xorIt);
+end;
+
+procedure TWalk.FillIL(off: Int64; v: Integer; xorIt: Boolean);
+var pitch, r: Int64; i: SizeInt;
+begin
+  pitch := Int64(st.rowBytes) * st.np;
+  if (off < 0) or (pitch <= 0) or (off div pitch >= st.h) then Exit;
+  r := off mod pitch;
+  i := SizeInt(r div st.rowBytes) * st.h * st.rowBytes + SizeInt(off div pitch) * st.rowBytes + r mod st.rowBytes;
+  if xorIt then tgt[i] := old[i] xor v else tgt[i] := v;
 end;
 
 procedure WalkBody(var wk: TWalk; rle: Boolean);
@@ -374,14 +504,337 @@ begin
   end;
 end;
 
+{ ---------------- the other delta methods (random access) ----------------
+
+  Each walk follows its method as a player would (FFmpeg's iff.c reads
+  them the same way): the pointers, counts and opcodes are tokens, the
+  data bytes are bitplane bytes at the place they go, with that place as
+  context. A byte is coded where the walk first needs it; whatever no walk
+  reached (padding, unused tables, damage) is coded after, in order. }
+
+const
+  K_OFS = 7; K_CNT = 8; K_TYPE = 9; K_FLAG = 10;
+
+{ the signed value of a 16- or 32-bit word }
+function S16(v: Int64): Int64; inline;
+begin
+  if v >= $8000 then Result := v - $10000 else Result := v;
+end;
+
+function S32(v: Int64): Int64; inline;
+begin
+  if v >= $80000000 then Result := v - $100000000 else Result := v;
+end;
+
+{ method 3: per plane, (offset, word) pairs and (negative offset, count,
+  words) runs along the plane's bytes, to 0xFFFF }
+procedure WalkDelta3(var wk: TWalk; xorIt: Boolean);
+var k, i: Integer; ptr, q, pos, off, cnt: Int64;
+  function Word2(at: SizeInt; bp: Int64; mode: Integer): Boolean;
+  begin
+    Result := (wk.PPL(at, k, bp, mode, xorIt) >= 0) and (wk.PPL(at + 1, k, bp + 1, mode, xorIt) >= 0);
+  end;
+begin
+  for k := 0 to wk.st.np - 1 do begin
+    ptr := wk.W32(4 * k, K_PTR, 4 * k);
+    if (ptr <= 0) or (ptr >= wk.len) then Continue;
+    q := ptr; pos := 0;
+    while q + 4 <= wk.len do begin
+      off := wk.W16(q, K_OFS, 0);
+      if (off < 0) or (off = $FFFF) then Break;
+      q := q + 2;
+      if off < $8000 then begin
+        pos := pos + off * 2;
+        if not Word2(q, pos, M_UNIQ) then Exit;
+        q := q + 2;
+      end else begin
+        cnt := wk.W16(q, K_CNT, 0);
+        if cnt < 0 then Exit;
+        q := q + 2;
+        pos := pos + 2 * (-(S16(off) + 2));
+        for i := 1 to cnt do begin
+          if q + 2 > wk.len then Exit;
+          pos := pos + 2;
+          if not Word2(q, pos, M_SAME) then Exit;
+          q := q + 2;
+        end;
+      end;
+    end;
+  end;
+end;
+
+{ methods 7 (data apart: 8 opcode lists, then 8 data lists) and 8 (data
+  inline, the counts and opcodes as wide as the data): per plane, per
+  column of words (short) or longwords (long), opcodes down the rows }
+procedure WalkVertical(var wk: TWalk; inline8, long, xorIt: Boolean);
+var k, j, b, nb, colBytes, ncol, lastOp, lastCnt, sameMode, uniqMode: Integer;
+    optr, dptr, q, dq, cnt, op, rc, n, y, r, skip, i, wide: Int64;
+    half: Boolean; v: array[0..3] of Integer;
+  function Num(at: SizeInt; kind, c: Integer; w: Integer): Int64;
+  begin
+    if w = 1 then Result := wk.TA(at, kind, c, 0)
+    else if w = 2 then Result := wk.W16(at, kind, c)
+    else Result := wk.W32(at, kind, c);
+  end;
+  { the data unit at `at` to row y of this column; False outside }
+  function DoUnit(at: SizeInt; mode: Integer): Boolean;
+  var bb: Integer;
+  begin
+    for bb := 0 to colBytes - 1 do begin
+      if bb < nb then v[bb] := wk.PA(at + bb, k, j * colBytes + bb, y, mode, xorIt)
+      else v[bb] := wk.TA(at + bb, K_TRAIL, 0, 2);      { the half column's unused word }
+      if v[bb] < 0 then Exit(False);
+    end;
+    Result := True;
+  end;
+begin
+  FillChar(v, SizeOf(v), 0);
+  if xorIt then begin sameMode := M_XSAME; uniqMode := M_XUNIQ; end
+  else begin sameMode := M_SAME; uniqMode := M_UNIQ; end;
+  if long then begin colBytes := 4; ncol := (wk.st.w + 31) shr 5; end
+  else begin colBytes := 2; ncol := (wk.st.w + 15) shr 4; end;
+  half := long and (wk.st.rowBytes <> ncol * 4);
+  lastOp := 0; lastCnt := 0;
+  for k := 0 to wk.st.np - 1 do begin
+    optr := wk.W32(4 * k, K_PTR, 4 * k);
+    if (optr <= 0) or (optr >= wk.len) then Continue;
+    dptr := 0;
+    if not inline8 then begin
+      dptr := wk.W32(32 + 4 * k, K_PTR, 32 + 4 * k);
+      if (dptr < 0) or (dptr >= wk.len) then Exit;
+    end;
+    q := optr; dq := dptr;
+    for j := 0 to ncol - 1 do begin
+      if half and (j = ncol - 1) then nb := 2 else nb := colBytes;
+      if inline8 then begin
+        if long then wide := 4 else wide := 2;
+        if half and (j = ncol - 1) then skip := $8000 else if long then skip := $80000000 else skip := $8000;
+      end else begin
+        wide := 1; skip := $80;
+      end;
+      cnt := Num(q, K_OPCNT, Ord(j = 0), wide);
+      if cnt < 0 then Exit;
+      q := q + wide;
+      y := 0;
+      i := 0;
+      while i < cnt do begin
+        Inc(i);
+        op := Num(q, K_OP, lastOp and 255, wide);
+        if op < 0 then Exit;
+        q := q + wide;
+        lastOp := op and 255;
+        if op = 0 then begin
+          if inline8 and half and (j = ncol - 1) then begin
+            rc := Num(q, K_SAMECNT, lastCnt, 2); q := q + 2;
+          end else begin
+            rc := Num(q, K_SAMECNT, lastCnt, wide); q := q + wide;
+          end;
+          if rc < 0 then Exit;
+          lastCnt := rc and 255;
+          if inline8 then begin
+            if half and (j = ncol - 1) then begin
+              for b := 0 to 1 do begin v[b] := wk.PA(q + b, k, j * colBytes + b, y, sameMode, xorIt); if v[b] < 0 then Exit; end;
+              q := q + 2;
+            end else begin
+              if not DoUnit(q, sameMode) then Exit;
+              q := q + colBytes;
+            end;
+          end else begin
+            if not DoUnit(dq, sameMode) then Exit;
+            dq := dq + colBytes;
+          end;
+          for r := 1 to Min(rc - 1, Int64(wk.st.h)) do
+            if y + r < wk.st.h then
+              for b := 0 to nb - 1 do
+                wk.FillIL((y + r) * Int64(wk.st.rowBytes) * wk.st.np + Int64(k) * wk.st.rowBytes + j * colBytes + b, v[b], xorIt);
+          y := y + rc;
+        end else if op < skip then
+          y := y + op
+        else begin
+          n := op - skip;
+          for r := 1 to n do begin
+            if inline8 then begin
+              if half and (j = ncol - 1) then begin
+                for b := 0 to 1 do if wk.PA(q + b, k, j * colBytes + b, y, uniqMode, xorIt) < 0 then Exit;
+                q := q + 2;
+              end else begin
+                if not DoUnit(q, uniqMode) then Exit;
+                q := q + colBytes;
+              end;
+            end else begin
+              if not DoUnit(dq, uniqMode) then Exit;
+              dq := dq + colBytes;
+            end;
+            Inc(y);
+          end;
+        end;
+        if y > Int64(wk.st.h) * 4 + 65536 then Exit;   { nonsense: the rest stays as bytes }
+      end;
+    end;
+  end;
+end;
+
+{ method 74 ("J"): groups of bytes at offsets into the interleaved bitmap,
+  type 1 down a column through the planes, type 2 rows of bytes }
+procedure WalkDeltaJ(var wk: TWalk);
+var q, t, flag, cols, groups, rows, bytes, g, b, dd, r, off, il, noff, pitch: Int64;
+    ppb, kludge: Integer; xorIt: Boolean;
+  function Map(o: Int64): Int64;
+  begin
+    if kludge > 0 then Result := (o div 40) * pitch + (o mod 40) - kludge
+    else Result := (o div ppb) * pitch + (o mod ppb);
+  end;
+begin
+  pitch := Int64(wk.st.rowBytes) * wk.st.np;
+  ppb := (wk.st.w + 7) div 8;
+  if wk.st.w < 320 then kludge := (320 - wk.st.w) div 16 else kludge := 0;
+  q := 0;
+  while q + 2 <= wk.len do begin
+    t := wk.W16(q, K_TYPE, 0);
+    if t < 0 then Exit;
+    q := q + 2;
+    if t = 1 then begin
+      flag := wk.W16(q, K_FLAG, 0); cols := wk.W16(q + 2, K_CNT, 0); groups := wk.W16(q + 4, K_CNT, 2);
+      if (flag < 0) or (cols < 0) or (groups < 0) then Exit;
+      q := q + 6;
+      xorIt := flag <> 0;
+      for g := 1 to groups do begin
+        off := wk.W16(q, K_OFS, 0);
+        if off < 0 then Exit;
+        q := q + 2;
+        if (cols * wk.st.np = 0) or (q + cols * wk.st.np > wk.len) then Exit;
+        il := Map(off);
+        for b := 1 to cols do
+          for dd := 1 to wk.st.np do begin
+            wk.PIL(q, il, M_UNIQ + 2 * Ord(xorIt), xorIt);
+            q := q + 1;
+            il := il + wk.st.rowBytes;
+          end;
+        if Odd(cols * wk.st.np) then q := q + 1;
+      end;
+    end else if t = 2 then begin
+      flag := wk.W16(q, K_FLAG, 0); rows := wk.W16(q + 2, K_CNT, 0);
+      bytes := wk.W16(q + 4, K_CNT, 2); groups := wk.W16(q + 6, K_CNT, 4);
+      if (flag < 0) or (rows < 0) or (bytes < 0) or (groups < 0) then Exit;
+      q := q + 8;
+      xorIt := flag <> 0;
+      for g := 1 to groups do begin
+        off := wk.W16(q, K_OFS, 0);
+        if off < 0 then Exit;
+        q := q + 2;
+        il := Map(off);
+        for r := 0 to rows - 1 do
+          for dd := 0 to wk.st.np - 1 do begin
+            if (bytes = 0) or (q + bytes > wk.len) then Exit;
+            noff := il + r * pitch + dd * wk.st.rowBytes;
+            for b := 0 to bytes - 1 do begin
+              wk.PIL(q, noff + b, M_UNIQ + 2 * Ord(xorIt), xorIt);
+              q := q + 1;
+            end;
+          end;
+        if Odd(rows * bytes * wk.st.np) then q := q + 1;
+      end;
+    end else
+      Exit;
+  end;
+end;
+
+{ methods 100 and 101: per plane, entries (opcode, offset): a value run
+  down the rows, or that many values, longwords (100) or words (101) }
+procedure WalkDeltaDE(var wk: TWalk; long: Boolean);
+var k, b, unitB, sameMode, uniqMode: Integer; ptr, q, entries, e, opc, off, il, pitch, ppb, r: Int64;
+    v: array[0..3] of Integer;
+begin
+  sameMode := M_SAME; uniqMode := M_UNIQ;
+  pitch := Int64(wk.st.rowBytes) * wk.st.np;
+  ppb := (wk.st.w + 7) div 8;
+  if long then unitB := 4 else unitB := 2;
+  for k := 0 to wk.st.np - 1 do begin
+    ptr := wk.W32(4 * k, K_PTR, 4 * k);
+    if (ptr <= 0) or (ptr >= wk.len) then Continue;
+    q := ptr;
+    if long then begin entries := wk.W32(q, K_CNT, 0); q := q + 4; end
+    else begin entries := wk.W16(q, K_CNT, 0); q := q + 2; end;
+    if entries < 0 then Exit;
+    e := 0;
+    while (e < entries) and (q + 2 + unitB <= wk.len) do begin
+      Inc(e);
+      if long then begin opc := wk.W32(q, K_OP, 0); q := q + 4; if opc >= 0 then opc := S32(opc); end
+      else begin opc := wk.W16(q, K_OP, 0); q := q + 2; if opc >= 0 then opc := S16(opc); end;
+      off := wk.W32(q, K_OFS, 0);
+      if off < 0 then Exit;
+      q := q + 4;
+      il := (off div ppb) * pitch + (off mod ppb) + Int64(k) * wk.st.rowBytes;
+      if opc >= 0 then begin
+        for b := 0 to unitB - 1 do begin
+          v[b] := wk.PIL(q + b, il + b, sameMode, False);
+          if v[b] < 0 then Exit;
+        end;
+        q := q + unitB;
+        for r := 1 to Min(opc - 1, Int64(wk.st.h)) do begin
+          if (il + r * pitch) div pitch >= wk.st.h then Break;
+          for b := 0 to unitB - 1 do wk.FillIL(il + r * pitch + b, v[b], False);
+        end;
+      end else
+        for r := 0 to -opc - 1 do begin
+          for b := 0 to unitB - 1 do
+            if wk.PIL(q + b, il + r * pitch + b, uniqMode, False) < 0 then Exit;
+          q := q + unitB;
+        end;
+    end;
+  end;
+end;
+
+{ method 108: per plane, (offset, count) pairs (to 0xFFFF) and the data
+  apart: a word repeated, or that many words, down (short) or across }
+procedure WalkDeltaL(var wk: TWalk; bits: Int64);
+var k, b: Integer; p0, p1, dq, oq, o, cnt, il, pitch, ppb, step, i: Int64; v: array[0..1] of Integer;
+begin
+  FillChar(v, SizeOf(v), 0);
+  pitch := Int64(wk.st.rowBytes) * wk.st.np;
+  ppb := (wk.st.w + 7) div 8;
+  if (bits and 1) = 0 then step := ppb * wk.st.np else step := 2;
+  for k := 0 to wk.st.np - 1 do begin
+    p0 := wk.W32(4 * k, K_PTR, 4 * k);
+    p1 := wk.W32(32 + 4 * k, K_PTR, 32 + 4 * k);
+    if (p0 <= 0) or (p1 < 0) then Continue;
+    dq := 2 * p0; oq := 2 * p1;
+    if (dq >= wk.len) or (oq >= wk.len) then Exit;
+    while oq + 4 <= wk.len do begin
+      o := wk.W16(oq, K_OFS, 0);
+      if (o < 0) or (o = $FFFF) then Break;
+      cnt := wk.W16(oq + 2, K_CNT, 0);
+      if cnt < 0 then Exit;
+      oq := oq + 4;
+      cnt := S16(cnt);
+      il := ((2 * o) div ppb) * pitch + ((2 * o) mod ppb) + Int64(k) * wk.st.rowBytes;
+      if cnt < 0 then begin
+        for b := 0 to 1 do begin
+          v[b] := wk.PIL(dq + b, il + b, M_SAME, False);
+          if v[b] < 0 then Exit;
+        end;
+        dq := dq + 2;
+        for i := 1 to -cnt - 1 do
+          for b := 0 to 1 do wk.FillIL(il + i * step + b, v[b], False);
+      end else
+        for i := 0 to cnt - 1 do begin
+          for b := 0 to 1 do
+            if wk.PIL(dq + b, il + i * step + b, M_UNIQ, False) < 0 then Exit;
+          dq := dq + 2;
+        end;
+    end;
+  end;
+end;
+
 procedure CodeIffChunk(cd: TCoder; tm: TTokenModel; pm: TDibModel; st: TAnimState;
                        const c: TIffChunk; var data: TBytes; len: SizeInt);
-var wk: TWalk; t, last: Integer;
+var wk: TWalk; t, last: Integer; i: SizeInt;
 begin
   wk.cd := cd; wk.tm := tm; wk.pm := pm; wk.st := st;
   if cd.encoding then wk.buf := data else begin wk.buf := nil; SetLength(wk.buf, len); end;
   wk.pos := 0; wk.len := len;
-  if c.sub = IK_DLTA5 then begin
+  wk.done := nil;
+  if IsDelta(c.sub) then begin
     Inc(st.deltas);
     if c.interleave = 1 then t := st.last
     else t := st.deltas and 1;          { the first delta draws into buffer 1 }
@@ -392,14 +845,31 @@ begin
   end;
   wk.tgt := st.buf[t];
   wk.old := Copy(wk.tgt, 0, Length(wk.tgt));
-  case c.sub of
-    IK_BODY_RLE: WalkBody(wk, True);
-    IK_BODY_RAW: WalkBody(wk, False);
-    IK_DLTA5: WalkDelta5(wk, c.xorMode);
+  if c.sub <= IK_DLTA5 then begin
+    case c.sub of
+      IK_BODY_RLE: WalkBody(wk, True);
+      IK_BODY_RAW: WalkBody(wk, False);
+      IK_DLTA5: WalkDelta5(wk, c.xorMode);
+    end;
+    last := 0;
+    while wk.pos < wk.len do last := wk.TB(K_TRAIL, last, 1);
+  end else begin
+    SetLength(wk.done, len);
+    case c.sub of
+      IK_DLTA3: WalkDelta3(wk, c.xorMode);
+      IK_DLTA7: WalkVertical(wk, False, (c.bits and 1) <> 0, c.xorMode);
+      IK_DLTA8: WalkVertical(wk, True, (c.bits and 1) <> 0, c.xorMode);
+      IK_DLTAJ: WalkDeltaJ(wk);
+      IK_DLTAD: WalkDeltaDE(wk, True);
+      IK_DLTAE: WalkDeltaDE(wk, False);
+      IK_DLTAL: WalkDeltaL(wk, c.bits);
+    end;
+    { what no walk reached, in order }
+    last := 0;
+    for i := 0 to len - 1 do
+      if not wk.done[i] then last := wk.TA(i, K_TRAIL, last, 1);
   end;
-  last := 0;
-  while wk.pos < wk.len do last := wk.TB(K_TRAIL, last, 1);
-  if c.sub <> IK_DLTA5 then begin
+  if not IsDelta(c.sub) then begin
     { the first frame is in both buffers }
     st.buf[1] := Copy(st.buf[0], 0, Length(st.buf[0]));
     st.last := 0; st.deltas := 0;

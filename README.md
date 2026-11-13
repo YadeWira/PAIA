@@ -47,8 +47,8 @@ verified.
 - **FLI and FLC** (8 bits): BYTE_RUN, DELTA_FLI, DELTA_FLC, COPY and BLACK
   chunks, field by field.
 - **ANI**: the bitmaps of its cursor and icon frames, 1 to 32 bits.
-- **IFF ANIM**: the first frame and the Byte Vertical Delta (method 5)
-  frames.
+- **IFF ANIM**: the first frame and the deltas of every method players
+  read: 5 (Byte Vertical Delta), 3, 7, 8, 74 ("J"), 100, 101 and 108.
 - **WebP**: lossless (VP8L) frames and the lossless alpha of lossy ones,
   still or animated; lossy (VP8) key frames.
 

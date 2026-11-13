@@ -21,9 +21,12 @@ hotspots, rate and sequence chunks, a frame kept as PNG, repeated frames
 file. Each frame, taken out, is a valid ICO or CUR for ImageMagick.
 
 `anim/`: IFF ANIMs written by `tools/mkanim.py`: a ByteRun1 BODY and an
-uncompressed one, Byte Vertical Delta frames double buffered as Amiga
-players draw them, one in XOR mode, and a truncated file. ffmpeg decodes
-all of them.
+uncompressed one, frames double buffered as Amiga players draw them with
+every delta method: 5 (Byte Vertical Delta, one in XOR mode), 3, 7 and 8
+(short and long), 74 ("J": both types, one in XOR mode, one under 320
+pixels wide), 100, 101 and 108; and a truncated file.
+`tools/check_anim.py` checks that FFmpeg decodes each to the frames
+meant.
 
 `webp/`: WebPs made with gif2webp and cwebp from the GIF samples above:
 lossless animations (one with `-m 6`), a lossy one with lossless alpha,

@@ -49,9 +49,10 @@
         data    (paiadib.CodeDib), the previous bitmap of the same shape
                 as context
       an IFF ANIM chunk:
-        varint  0 an uncompressed BODY, 1 a ByteRun1 BODY, 2 a method-5 DLTA
+        varint  0 an uncompressed BODY, 1 a ByteRun1 BODY, a DLTA of method
+                2: 5, 3: 3, 4: 7, 5: 8, 6: 74 ("J"), 7: 100, 8: 101, 9: 108
         varint  a BODY: width, height, planes (it starts an animation);
-                a DLTA: ANHD's interleave, XOR mode
+                a DLTA: ANHD's interleave, XOR mode, bits (version 9)
         varint  data length
         data    (paiaiff.CodeIffChunk)
       a WebP VP8L stream:
@@ -379,9 +380,9 @@ begin
         end;
         if kind = 3 then begin
           { an IFF ANIM's BODY or DLTA }
-          iff.sub := Bounded(V(iff.sub), 2);
+          iff.sub := Bounded(V(iff.sub), IK_LAST);
           { a BODY starts an animation: its shape }
-          if iff.sub <> IK_DLTA5 then begin
+          if not IsDelta(iff.sub) then begin
             iff.width := Bounded(V(iff.width), 65535);
             iff.height := Bounded(V(iff.height), 65535);
             iff.planes := Bounded(V(iff.planes), 8);
@@ -393,6 +394,7 @@ begin
           end else begin
             iff.interleave := Bounded(V(iff.interleave), 255);
             iff.xorMode := Bounded(V(Ord(iff.xorMode)), 1) <> 0;
+            iff.bits := Bounded(V(iff.bits), $FFFFFFFF);
           end;
           if ist = nil then raise Exception.Create('paiacodec: damaged stream');
           flen := Bounded(V(Length(fdata)), maxOut);
@@ -540,7 +542,7 @@ begin
   stats.dibs := Length(dibs);
   iffs := FindIffChunks(d);
   { a DLTA before any BODY has no frame to change: such an ANIM stays as bytes }
-  if (Length(iffs) > 0) and (iffs[0].sub = IK_DLTA5) then iffs := nil;
+  if (Length(iffs) > 0) and IsDelta(iffs[0].sub) then iffs := nil;
   stats.iffChunks := Length(iffs);
   wsts := FindWebpStreams(d);
   stats.webpStreams := Length(wsts);

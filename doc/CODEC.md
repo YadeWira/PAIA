@@ -208,30 +208,51 @@ not ANIs (107 MB: 63.82%, xz 65.75%).
 
 An Amiga ANIM is a FORM ANIM of FORM ILBMs: the first frame as a BODY
 (bitplanes, row by row and plane by plane, ByteRun1-compressed or not),
-each other as a DLTA. The deltas taken are method 5, Byte Vertical Delta,
-by far the most used: for each plane a pointer, and for each column of
-bytes a list of operations going down the rows (skip rows, repeat a byte,
-take bytes as they are), setting or, in XOR mode, flipping the bits.
+each other as a DLTA. Every delta method FFmpeg reads is taken:
+
+| method | what it holds |
+|---|---|
+| 5, Byte Vertical Delta (the most used) | per plane a pointer; per column of bytes, operations down the rows: skip rows, repeat a byte, bytes as they are |
+| 3, short horizontal delta | per plane, words at offsets along the plane, and runs of words |
+| 7, short or long vertical delta | as 5, on columns of words or longwords (ANHD bits, bit 0), the operations and the data in separate lists |
+| 8, short or long vertical delta | as 7, the counts and operations as wide as the data, in one list |
+| 74, "J" | groups of bytes at offsets into the interleaved bitmap: down a column through the planes, or rectangles of rows |
+| 100, 101 | per plane, entries of a run of one value down the rows, or values: longwords (100), words (101) |
+| 108 | per plane, (offset, count) pairs and their words apart, down the rows or across |
 
 As for FLICs, a BODY's and a DLTA's bytes are coded in their own order,
 field by field: the structure (pointers, operation counts, operations,
-repeat counts, ByteRun1 headers) to a token model, the bitplane bytes to
-a model that sees the bitmaps as the frames build them: what the byte
-replaces, the frame shown before, the bytes above and to the left in its
-plane, the plane below at the same place, and a match model. The frames
-are double buffered, as Amiga players draw them: a delta changes the
-frame two back (unless its ANHD says one back). The other reading, one
-back, compresses worse on every file tried, as it should.
+repeat counts, offsets, ByteRun1 headers) to a token model, the bitplane
+bytes to a model that sees the bitmaps as the frames build them: what the
+byte replaces, the frame shown before, the bytes above and to the left in
+its plane, the plane below at the same place, and a match model. The
+frames are double buffered, as Amiga players draw them: a delta changes
+the frame two back (unless its ANHD says one back). The other reading,
+one back, compresses worse on every file tried, as it should.
+
+Methods 5 and the BODYs are walked in the order of their bytes. The
+others keep their operations and their data apart, or write through
+offsets, so they are walked as a player reads them, and each byte is
+coded where the walk first needs it (a token, or a bitplane byte at the
+place it goes); the bytes no walk reached (padding, unused tables, damage)
+are coded after, in order. The decoder walks the same way, so any delta,
+broken or not, comes back the same.
 
 | 14 ANIMs of the sample corpus (6.1 MB) | total | |
 |---|---|---|
 | PAIA 0.0.5 (everything as plain bytes) | 3,336,322 | 54.47% |
 | PAIA 0.0.6 | 2,842,474 | 46.41% |
-| PAIA 0.0.11 (learning rates) | 2,760,975 | **45.08%** |
+| PAIA 0.0.11 (learning rates) | 2,760,975 | 45.08% |
+| PAIA, stream 9 (methods 3 and 74 taken) | 2,647,964 | **43.23%** |
+| paq8px v217 -8 | | 43.85% |
 | xz -9e | 3,198,248 | 52.22% |
 
-Each came back the same. Not taken yet: delta methods 3 and 74 ("J"),
-0.9 MB of the corpus, on whose two files xz is still smaller.
+The corpus's file of method 3 went from 149,938 bytes to 79,005 (xz:
+129,992), its file of method 74 from 369,289 to 327,195 (xz: 370,192).
+`tests/anim` has samples of every method, written by
+`tests/tools/mkanim.py` and checked against FFmpeg's reading of them by
+`tests/tools/check_anim.py`; 3,300 damaged copies of them went through
+the checked build without an internal error, all back the same.
 
 ## WebP (`pas/paiawebp.pas`): VP8L
 
