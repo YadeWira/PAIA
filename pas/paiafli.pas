@@ -685,8 +685,8 @@ begin
   end;
 end;
 
-{ DTA_COPY (and COPY on deeper FLCs): the pixels, a 2-byte pad after each
-  line of an odd width of 2-byte pixels }
+{ DTA_COPY (and COPY on deeper FLCs): the pixels, a pixel's worth of pad
+  after each line of an odd width }
 procedure WalkCopyN(var wk: TWalk);
 var x, y, b: Integer;
 begin
@@ -696,10 +696,11 @@ begin
         if not wk.More(1) then Exit;
         wk.PXN(x, y, b, M_COPY);
       end;
-    if (wk.im.bpp = 2) and Odd(wk.im.w) then begin
-      if not wk.More(2) then Exit;
-      wk.TB(K_TRAIL, 0, 2); wk.TB(K_TRAIL, 0, 2);
-    end;
+    if Odd(wk.im.w) then
+      for b := 1 to wk.im.bpp do begin
+        if not wk.More(1) then Exit;
+        wk.TB(K_TRAIL, 0, 2);
+      end;
   end;
 end;
 

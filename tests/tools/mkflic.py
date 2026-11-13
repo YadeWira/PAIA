@@ -118,7 +118,9 @@ def frames16(w, h, n):
         out.append(px)
     return out
 
-def words(px): return b''.join(struct.pack('<H', v) for v in px)
+PW = 2   # bytes a pixel of the deep FLIC being written
+
+def words(px): return b''.join(v.to_bytes(PW, 'little') for v in px)
 
 def dbrun(px, w, h):
     out = bytearray()
@@ -127,7 +129,7 @@ def dbrun(px, w, h):
         while x < w:
             r = 1
             while x + r < w and row[x + r] == row[x] and r < 127: r += 1
-            if r >= 2: pk += struct.pack('<bH', r, row[x]); x += r
+            if r >= 2: pk += struct.pack('<b', r) + words([row[x]]); x += r
             else:
                 s = x
                 while x < w and x - s < 127 and not (x + 1 < w and row[x + 1] == row[x]): x += 1
@@ -159,11 +161,16 @@ def dcopy(px, w, h):
     out = bytearray()
     for y in range(h):
         out += words(px[y * w:(y + 1) * w])
-        if w % 2: out += b'\0\0'
+        if w % 2: out += bytes(PW)
     return bytes(out)
 
-def flic16(path, magic, w, h, n, kinds):
-    fr = frames16(w, h, n); body = bytearray(); prev = [0] * (w * h)
+def frames24(w, h, n):
+    return [[((v & 31) << 19) | (((v >> 5) & 63) << 10) | ((v >> 11) << 3) for v in fr] for fr in frames16(w, h, n)]
+
+def flic16(path, magic, w, h, n, kinds, depth=16):
+    global PW
+    PW = 3 if depth == 24 else 2
+    fr = (frames24 if depth == 24 else frames16)(w, h, n); body = bytearray(); prev = [0] * (w * h)
     for k in range(n):
         kind = kinds[k % len(kinds)] if k else kinds[0]
         if kind == 'dbrun': c = chunk(25, dbrun(fr[k], w, h))
@@ -172,7 +179,7 @@ def flic16(path, magic, w, h, n, kinds):
         elif kind == 'black': c = chunk(13, b''); fr[k] = [0] * (w * h)
         body += struct.pack('<IHHH', 16 + len(c), 0xF1FA, 1, 0) + bytes(6) + c
         prev = fr[k]
-    hdr = struct.pack('<IHHHHHHI', 128 + len(body), magic, n, w, h, 16, 3, 5)
+    hdr = struct.pack('<IHHHHHHI', 128 + len(body), magic, n, w, h, depth, 3, 5)
     hdr += bytes(128 - len(hdr))
     open(path, 'wb').write(hdr + body)
 
@@ -219,3 +226,4 @@ flic16(os.path.join(out, 'dta16.flc'), 0xAF44, 48, 32, 8, ['dcopy', 'dlc', 'dbru
 flic16(os.path.join(out, 'dta16_odd.flc'), 0xAF12, 37, 23, 6, ['dbrun', 'dlc', 'black', 'dcopy'])
 stamped(os.path.join(out, 'stamp.flc'), 64, 40, 5)
 sounded(os.path.join(out, 'sound.fli'), 64, 40, 6)
+flic16(os.path.join(out, 'dta24_odd.flc'), 0xAF44, 33, 21, 6, ['dcopy', 'dlc', 'dbrun'], depth=24)

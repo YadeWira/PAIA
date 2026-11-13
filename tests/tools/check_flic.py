@@ -31,21 +31,30 @@ def frames16(w, h, n):   # as mkflic.py
         out.append(px)
     return out
 
+def frames24(w, h, n):   # as mkflic.py
+    return [[((v & 31) << 19) | (((v >> 5) & 63) << 10) | ((v >> 11) << 3) for v in fr] for fr in frames16(w, h, n)]
+
 SPEC = {  # name: (w, h, n, bits, black frames)
     'synth_lc.fli': (64, 40, 8, 8, ()), 'synth_ss2.flc': (63, 41, 8, 8, ()),
     'stamp.flc': (64, 40, 5, 8, ()), 'sound.fli': (64, 40, 6, 8, ()),
     'dta16.flc': (48, 32, 8, 565, ()), 'dta16_odd.flc': (37, 23, 6, 555, (2,)),
+    'dta24_odd.flc': (33, 21, 6, 24, ()),
 }
 
 d = sys.argv[1]; bad = 0
 for name, (w, h, n, bits, black) in sorted(SPEC.items()):
-    fmt = {8: 'pal8', 565: 'rgb565le', 555: 'rgb555le'}[bits]
+    fmt = {8: 'pal8', 565: 'rgb565le', 555: 'rgb555le', 24: 'bgr24'}[bits]
     r = subprocess.run(['ffmpeg', '-v', 'error', '-i', os.path.join(d, name), '-fps_mode', 'passthrough',
                         '-f', 'rawvideo', '-pix_fmt', fmt, '-'], capture_output=True)
     if bits == 8:
         size = w * h + 1024
         got = [r.stdout[i:i + w * h] for i in range(0, len(r.stdout), size)]
         want = frames(w, h, n)
+    elif bits == 24:
+        size = w * h * 3
+        raw = [r.stdout[i:i + size] for i in range(0, len(r.stdout), size)]
+        got = [[f[3 * i] | f[3 * i + 1] << 8 | f[3 * i + 2] << 16 for i in range(w * h)] for f in raw]
+        want = frames24(w, h, n)
     else:
         size = w * h * 2
         raw = [r.stdout[i:i + size] for i in range(0, len(r.stdout), size)]
