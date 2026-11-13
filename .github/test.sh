@@ -16,6 +16,10 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
 if command -v sha256sum > /dev/null; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
 rm -rf "$OUT"; mkdir -p "$OUT/c" "$OUT/uf" "$OUT/up" "$OUT/uk"
 
+echo "== the frozen decoder of stream version 8 (doc/STABILITY.md)"
+(cd pas && $SHA -c ../tests/frozen8.sha256 > /dev/null) || { echo "FAIL: pas/paia8* changed: version 8 must decode as 0.2.0 did"; exit 1; }
+echo "pas/paia8*: unchanged"
+
 echo "== build"
 # the commit the command names in --version and report (release.yml sets
 # it; '' where there is no git)

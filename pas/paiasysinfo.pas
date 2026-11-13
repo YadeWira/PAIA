@@ -64,7 +64,7 @@ implementation
 uses
   {$ifdef UNIX} BaseUnix, {$endif}
   {$ifdef MSWINDOWS} Windows, {$endif}
-  Classes, paiacpu, paiamodel;
+  Classes, paiacpu, paiamodel, paia8model;
 
 {$ifdef CPUX86_64}
 {$asmmode intel}
@@ -179,6 +179,7 @@ function SetCpuPath(p: TCpuPath): Boolean;
 begin
   if not CpuPathSupported(p) then Exit(False);
   UseCModel := p = cpC;
+  paia8model.UseCModel := UseCModel;   { the frozen decoder of version 8 too }
   Result := True;
 end;
 

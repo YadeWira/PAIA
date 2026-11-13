@@ -30,3 +30,6 @@ esac
 mkdir -p "$OUT"
 # shellcheck disable=SC2086
 $CC $FLAGS "$@" -c "$HERE/paiapix.c" -o "$OUT/paiapix.o"
+# the frozen pixel model of codec stream version 8 (paia8model.pas)
+# shellcheck disable=SC2086
+$CC $FLAGS "$@" -c "$HERE/paia8pix.c" -o "$OUT/paia8pix.o"

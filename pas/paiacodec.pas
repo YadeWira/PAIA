@@ -77,10 +77,11 @@ unit paiacodec;
 
 interface
 
-uses SysUtils, paiaarith, paiamodel, paiagif, paiafli, paiadib, paiaiff, paiawebp, paiavp8;
+uses SysUtils, paiaarith, paiamodel, paiagif, paiafli, paiadib, paiaiff, paiawebp, paiavp8,
+  paia8codec;   { version 8, frozen: read forever }
 
 const
-  STREAM_VERSION = 8;
+  STREAM_VERSION = 9;
 
 type
   TCodecStats = record
@@ -629,6 +630,8 @@ function Decompress(const s: TBytes; maxOut: SizeInt): TBytes;
 var tk: TTakenArray; raw, data: TBytes; i, count: Integer; cd: TCoder;
     total, o, q: SizeInt;
 begin
+  { version 8 (0.1.0, 0.2.0): its frozen decoder }
+  if (Length(s) >= 1) and (s[0] = 8) then Exit(paia8codec.Decompress(s, maxOut));
   if (Length(s) < 3) or (s[0] <> STREAM_VERSION) then
     raise Exception.Create('paiacodec: unknown stream version');
   if (s[1] < 12) or (s[1] > 22) or (s[2] < 12) or (s[2] > 22) then

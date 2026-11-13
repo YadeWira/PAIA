@@ -24,12 +24,17 @@ BLAKE3-128 and extension. Read forever.
 
 | version | written by | what |
 |---|---|---|
-| 8 | 0.1.0 (the command, and the zpaq-std plugin's codecs) | a file's bytes without the image data it takes, and the records: GIF images (kind 0), FLIC chunks (1), ANI bitmaps (2), IFF ANIM chunks (3), WebP VP8L streams (4), WebP VP8 frames (5), and records repeating an earlier one |
+| 8 | 0.1.0, 0.2.0 (the command, and the zpaq-std plugin's codecs) | a file's bytes without the image data it takes, and the records: GIF images (kind 0), FLIC chunks (1), ANI bitmaps (2), IFF ANIM chunks (3), WebP VP8L streams (4), WebP VP8 frames (5), and records repeating an earlier one |
+| 9 | the next release (not published yet: may still change) | version 8's layout and models, as the work towards the next release changes them |
 
 Version 8 as 0.1.0 writes it is read forever: its layout, the records'
 fields, and the models that code them (contexts, counters, mixers,
 maps, tables and constants), bit for bit. A later model or layout is a
-new version (9 and up), and the decoder for version 8 stays. Versions 1
+new version (9 and up), and the decoder for version 8 stays. That decoder is a
+frozen copy of the codec as 0.2.0 has it, in its own units
+(`pas/paia8*.pas` and `pas/paia8pix.c`), which are never changed: the
+live codec can change its models freely, and version 8 keeps decoding
+exactly as it did. Versions 1
 to 7 were only written by builds before 0.1.0, never by a release, and
 are not read.
 
