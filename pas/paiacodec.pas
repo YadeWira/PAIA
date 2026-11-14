@@ -301,7 +301,7 @@ procedure CodeAll(cd: TCoder; var raw: TBytes; var tk: TTakenArray; var count: I
 var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     flags: Integer; canvas: TCanvas; cv, pw: TWords; newStream: Boolean;
     rawLen, flen: SizeInt; fm: TFliModel; fimg: TFliImage; fliStream, gifStream: Integer;
-    dm: TDibModel; prevDib: TBytes; k: Integer;
+    dm: TDibModel; dtm: TTrueModel; prevDib, smallDib: TBytes; k, sw, sh: Integer;
     itm: TTokenModel; ipm: TDibModel; ist: TAnimState; wstate: TWebpState; dup: Integer; vm: TVp8Model;
     flm: TFlifModel;
   { the value when encoding; when decoding, whatever was decoded }
@@ -317,7 +317,7 @@ var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     Result := x;
   end;
 begin
-  canvas := nil; fm := nil; fimg := nil; fliStream := -1; gifStream := -1; dm := nil;
+  canvas := nil; fm := nil; fimg := nil; fliStream := -1; gifStream := -1; dm := nil; dtm := nil;
   itm := nil; ipm := nil; ist := nil; wstate := nil; vm := nil; flm := nil;
   bm := TByteModel.Create(byteBits);
   pm := TPixelModel.Create(pixelBits);
@@ -443,8 +443,20 @@ begin
                (tk[k].dib.height = dib.height) and (tk[k].dib.bpp = dib.bpp) then begin
               prevDib := tk[k].fdata; Break;
             end;
-          if dm = nil then dm := TDibModel.Create(pixelBits);
-          CodeDib(cd, dm, dib, fdata, flen, prevDib);
+          { a smaller bitmap of the same bits, just before: the same
+            cursor at another size, in the same frame (Vista's cursors keep
+            32, 48, 64, 128 and 256 pixels) }
+          smallDib := nil; sw := 0; sh := 0;
+          for k := i - 1 downto Math.Max(0, i - 16) do
+            if (tk[k].kind = 2) and (tk[k].dib.bpp = dib.bpp) and (tk[k].dib.width < dib.width) and
+               (tk[k].dib.height < dib.height) then begin
+              smallDib := tk[k].fdata; sw := tk[k].dib.width; sh := tk[k].dib.height; Break;
+            end;
+          if dm = nil then begin
+            dm := TDibModel.Create(pixelBits, True);
+            dtm := TTrueModel.Create(pixelBits);
+          end;
+          CodeDib(cd, dm, dib, fdata, flen, prevDib, smallDib, sw, sh, dtm);
           Continue;
         end;
         if kind = 1 then begin
@@ -529,6 +541,7 @@ begin
     wstate.Free;
     ist.Free; ipm.Free; itm.Free;
     dm.Free;
+    dtm.Free;
     fimg.Free;
     fm.Free;
     canvas.Free;
