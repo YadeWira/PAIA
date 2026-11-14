@@ -52,20 +52,31 @@ other...), and only images whose sub-blocks are complete.
   the values around; most pixels of a GIF end there, with one binary
   decision. When it is not the candidate: its bits from the top, with the
   neighbours as they are seen (a transparent one replaced by the canvas
-  under it), nine contexts (order 0; left;
+  under it), 36 contexts: nine of the nearest (order 0; left;
   up; left and up; left, up, up-left, up-right; left, left-left, up,
   up-up; the previous frame's pixel with left and up; the previous frame's
-  pixel, right and below; up-left, up, up-right), mixed by a logistic mixer
-  chosen by the bit's position and whether left = up, the previous frame's
-  pixel = left, up = up-right; then two adaptive probability maps (on left
-  and on up). "The previous frame's pixel" is the canvas under it.
+  pixel, right and below; up-left, up, up-right), 19 of neighbours up to
+  four pixels away and of the column (pairs and triples, as paq8px's 8-bit
+  image model has them), two of a match (what followed the last six
+  pixels where they were last seen, and for how long they have agreed),
+  and two of the pixels one period back across and down, when the image
+  repeats itself (a tiled background: the encoder looks for the distance
+  from 8 to 512 at which most pixels repeat, and sends it). Three logistic
+  mixers, chosen by the bit's position and whether left = up, the previous
+  frame's pixel = left, up = up-right; by the bits so far; and by the left
+  pixel; a fourth mixes the three, chosen by the bit's position and the
+  match's length; then two adaptive probability maps (on left and on up).
+  "The previous frame's pixel" is the canvas under it. The match also
+  gives the flag a seventh context.
 - **Everything else** (headers, palettes, extensions, the side
   information): orders 0 to 3 and a match model, mixed.
 
 The counters of a context sit in slots of 16 (a 64-byte cache line), one
 for the high bits of a pixel and one for the low four (as lpaq does); the
-tables are sized from the input (2^12 to 2^22 counters each), and a
-zeroed table is the initial state, so nothing has to be filled.
+tables are sized from the input (2^12 to 2^22 counters each; the 27
+contexts past the nearest nine a quarter of that: 244 MB at most instead
+of 544, for 0.2% more), and a zeroed table is the initial state, so
+nothing has to be filled.
 
 Integer arithmetic only: the same bytes on every platform.
 
@@ -132,6 +143,37 @@ faster adaptive probability maps (-1%). 661,669 -> 619,078 bytes (-6.4%).
 On files the sweep did not see: the GIF corpus 44.79% -> 42.07%, the
 optimized GIFs 54.78% -> 52.13%. The C model takes the mixer's shift
 from the Pascal side too, and gives the same bytes.
+
+### 36 contexts (stream version 9)
+
+Against paq8px -8 file by file on the benchmark's GIF set (39 files, 36.9
+MB), PAIA lost by 5 to 12% on photographs and their animations
+(`example.gif`, one 4608x3072 image: 37.65% against 33.48%) and by 40% on
+a tiled background (`wtrback.gif`), wherever paq8px reads the GIF. What
+each step did, on 14 of those files (2.62 MB of output):
+
+| | output | |
+|---|---|---|
+| version 9 before | 2,618,100 | |
+| 40 more contexts of neighbours and the column | 2,530,248 | -3.4% |
+| a match on the last six pixels | 2,504,903 | -1.0% |
+| the mixer learning at 1/2^13 instead of 1/2^11 | 2,435,738 | -2.8% |
+| two more mixers and one mixing them | 2,395,231 | -1.7% |
+| only the 25 of the 40 worth more than 500 bytes each; their tables a quarter | 2,410,221 | +0.6% |
+| the second probability map weighed more | 2,408,021 | -0.1% |
+| the period across and down | **2,387,798** | -0.8% |
+
+Tried and left out: the palette sorted by brightness, so that the top
+bits of an index say how bright it is (+0.03%), and contexts of the
+colours themselves (the gradient's prediction, the palette entry nearest
+it, the average of left and up: -0.2%, nothing once the mixers were
+there). A faster mixer for the flag was worse.
+
+The whole set: **44.74% -> 41.59%** (16,522,061 -> 15,358,518 bytes;
+paq8px -8: 48.68%, though it reads only some of these GIFs). Better on 35
+of the 39 files: 21% on `wtrback.gif` and `SAMPLES.GIF`, 7% on
+`example.gif`. It costs speed: these 14 files take 78 s of processor time
+instead of 20.
 
 The same sweep, model by model, on files of their own formats (0.0.11):
 

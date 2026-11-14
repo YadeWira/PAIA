@@ -189,7 +189,7 @@ One object a line:
 | `x` | `output`, `original_size`, `paia_size` |
 | `t` | `original_size`, `paia_size` |
 | `list` | `original_size`, `paia_size`, `ratio_percent`, `stored`, `extension`, `blake3_128` |
-| `info` | the tree the text shows: `format`, `size`, and the format's own; then `paia`: `command` (`a` or `x`), `ok`, `summary` (the line of the text), and for `a`: `takes`, `records` (`gif_images`, `gif_images_taken`, `flic_chunks`, `ani_bitmaps`, `iff_chunks`, `vp8l_streams`, `vp8_frames`), `stream`, `stream_version` (0 for stored as is), `paia_size`, `ratio_percent`, or `error`; for `x`: `original_size` or `error` |
+| `info` | the tree the text shows: `format`, `size`, and the format's own; then `paia`: `command` (`a` or `x`), `ok`, `summary` (the line of the text), and for `a`: `takes`, `records` (`gif_images`, `gif_images_taken`, `flic_chunks`, `ani_bitmaps`, `iff_chunks`, `vp8l_streams`, `vp8_frames`, `flif_streams`, and `plain_bytes`: the bytes outside them, coded one by one), `stream`, `stream_version` (0 for stored as is), `paia_size`, `ratio_percent`, or `error`; for `x`: `original_size` or `error` |
 | `--stats` (`a`, `x`, `t`) | `stats`: each stage's `NAME_ms`, `total_ms` |
 
 The summary: `command`, `files`, `failed`, `bugs`, `bytes_in`, `bytes_out`,

@@ -8,7 +8,13 @@
   previous image of the same width, the frame before in an animation.
   Most pixels of a GIF repeat one of these: so each pixel first codes one
   flag, "it is the candidate" (the previous frame's pixel, or the left one),
-  and only when it is not, its bits.
+  and only when it is not, its bits. Those bits see 36 contexts: pairs and
+  triples of neighbours up to four pixels away (as paq8px's 8-bit image
+  model), the column, what followed the last six pixels where they were
+  seen before (a match), and the pixels one period back across and down
+  when the image repeats itself (a tiled background). Three mixers, chosen
+  by the bit, the bits so far and the left pixel, and a fourth that mixes
+  them.
 
   The counters of one context are kept in slots of 16 (64 bytes, a cache
   line): one slot for the high bits of a symbol, one for the low four,
@@ -30,14 +36,17 @@ unit paiamodel;
 
 interface
 
-uses SysUtils, paiaarith;
+uses SysUtils, Math, paiaarith;
 
 const
-  PIXEL_CONTEXTS = 9;
-  FLAG_CONTEXTS = 6;
+  PIXEL_CONTEXTS = 36;
+  FLAG_CONTEXTS = 7;
+  { the match: the last MATCH_MIN pixels find where they were before }
+  MATCH_MIN = 6;
 
 type
   TWords = array of Word;
+  TLongInts = array of LongInt;
 
   TByteModel = class
   private
@@ -58,7 +67,7 @@ type
   TPixelModel = class
   private
     t: array[0..PIXEL_CONTEXTS - 1] of TCounters;
-    mx: TMixer;
+    mx, mx2, mx3, mf: TMixer;
     apm1, apm2: TApm;
     { the "same as the candidate" flag }
     ft: array[0..FLAG_CONTEXTS - 1] of TCounters;
@@ -70,12 +79,14 @@ type
       `bits` bits a pixel. cv: for each pixel, the canvas under it before
       this image (256: none); pw: the previous image's pixel at the same
       place (256: none, 257: it was transparent there); either may be nil.
-      transp: this image's transparent index, or -1. }
+      transp: this image's transparent index, or -1. perX, perY: the
+      distances at which it repeats across and down (FindPeriods), or 0. }
     procedure CodeImage(cd: TCoder; var px: TBytes; n: SizeInt; width, bits: Integer;
-                        const cv, pw: TWords; transp: Integer);
+                        const cv, pw: TWords; transp, perX, perY: Integer);
     { the reference: what paiapix.c does, in Pascal }
     procedure CodeImagePascal(cd: TCoder; var px: TBytes; n: SizeInt; width, bits: Integer;
-                              const cv, pw: TWords; transp: Integer);
+                              const cv, pw: TWords; transp, perX, perY: Integer;
+                              var mt: TLongInts);
   end;
 
 { True when the C model is linked in (the release build); the checked build
@@ -88,6 +99,11 @@ var
   { the C model where it is linked in, or the Pascal one (--cpu=pascal):
     the same bytes. Set before any work starts. }
   UseCModel: Boolean = True;
+
+{ The encoder's choice: across (perX) and down (perY), the distance from 8
+  to 512 at which most pixels repeat, sampled on some rows; 0 for an image
+  under 4096 pixels or too narrow (short). Only a guess: any value codes. }
+procedure FindPeriods(const px: TBytes; n: SizeInt; width: Integer; out perX, perY: Integer);
 
 { The table size for a model that will see about `symbols` symbols:
   enough slots for two per symbol, between 2^12 and 2^22 counters. }
@@ -109,7 +125,7 @@ type
   TPixState = record
     t: array[0..PIXEL_CONTEXTS - 1] of TCCounters;
     ft: array[0..FLAG_CONTEXTS - 1] of TCCounters;
-    mx, fmx: TCMixer;
+    mx, mx2, mx3, mf, fmx: TCMixer;
     apm1, apm2, fapm: TCApm;
     stretchTab, squashTab: PSmallInt;
     apmBase, rateTab: PLongInt;
@@ -124,7 +140,10 @@ type
 
 type
   { what has to survive from one batch to the next }
-  TCRun = record run, cntT, cntV, pad: LongInt; end;
+  TCRun = record
+    run, cntT, cntV, mLen, mPtr, mMask, perX, perY: LongInt;
+    mt: PLongInt;
+  end;
 
 { external with no name: FreePascal gives it the platform's C name (a
   leading underscore on 32-bit Windows and on macOS) }
@@ -234,8 +253,14 @@ constructor TPixelModel.Create(tableBits: Integer);
 var i: Integer;
 begin
   inherited Create;
-  for i := 0 to High(t) do t[i].Init(tableBits, 30);
-  mx.Init(Length(t) + 1, 8 * 8, 1, 11);
+  { the first nine (the nearest neighbours) get the full size, the others a
+    quarter: 0.2% bigger, 244 MB instead of 544 for a large image }
+  for i := 0 to High(t) do
+    if i < 9 then t[i].Init(tableBits, 30) else t[i].Init(Max(12, tableBits - 2), 30);
+  mx.Init(Length(t) + 1, 8 * 8, 1, 13);
+  mx2.Init(Length(t) + 1, 256, 1, 13);
+  mx3.Init(Length(t) + 1, 257 * 8, 1, 13);
+  mf.Init(4, 8 * 7, 1, 13);
   apm1.Init(256 * 256, 6);
   apm2.Init(256 * 256, 6);
   for i := 0 to High(ft) do ft[i].Init(tableBits - 2, 30);
@@ -243,16 +268,57 @@ begin
   fapm.Init(1024 * 16, 6);
 end;
 
+procedure FindPeriods(const px: TBytes; n: SizeInt; width: Integer; out perX, perY: Integer);
+var rows, step, d, y, x, best, cnt: Integer;
+begin
+  perX := 0; perY := 0;
+  if (width < 1) or (n < 4096) then Exit;
+  rows := n div width;
+  { about 64 rows, every 7th at most }
+  step := Max(7, rows div 64);
+  best := 0;
+  for d := 8 to Min(width div 2, 512) do begin
+    cnt := 0; y := 0;
+    while y < rows do begin
+      for x := d to width - 1 do
+        if px[SizeInt(y) * width + x] = px[SizeInt(y) * width + x - d] then Inc(cnt);
+      Inc(y, step);
+    end;
+    if cnt > best then begin best := cnt; perX := d; end;
+  end;
+  best := 0;
+  for d := 8 to Min(rows div 2, 512) do begin
+    cnt := 0; y := d;
+    while y < rows do begin
+      for x := 0 to width - 1 do
+        if px[SizeInt(y) * width + x] = px[SizeInt(y - d) * width + x] then Inc(cnt);
+      Inc(y, step);
+    end;
+    if cnt > best then begin best := cnt; perY := d; end;
+  end;
+end;
+
+{ the match's table: a power of two, about the pixels, 2^10 to 2^22 }
+function MatchMask(n: SizeInt): LongInt;
+begin
+  Result := 1023;
+  while (Result < n) and (Result < (1 shl 22) - 1) do Result := Result * 2 + 1;
+end;
+
 procedure TPixelModel.CodeImage(cd: TCoder; var px: TBytes; n: SizeInt; width, bits: Integer;
-                                const cv, pw: TWords; transp: Integer);
+                                const cv, pw: TWords; transp, perX, perY: Integer);
+var mt: TLongInts;
 {$ifdef PAIA_C}
 const BATCH = 65536;
 var st: TPixState; cs: TCState; j: Integer; i0, i1, need: Int64; r: TCRun; pcv, ppw: PWord;
   procedure C(var c: TCCounters; const t: TCounters);
   begin c.e := @t.e[0]; c.mask := t.mask; c.limit := t.limit; c.pad := 0; end;
+  procedure M(var c: TCMixer; const m: TMixer);
+  begin c.w := @m.w[0]; c.nIn := m.nIn; c.rate := m.rate; c.shift := m.shift; c.pad := 0; end;
 begin
+  mt := nil;
   if not UseCModel then begin
-    CodeImagePascal(cd, px, n, width, bits, cv, pw, transp);
+    CodeImagePascal(cd, px, n, width, bits, cv, pw, transp, perX, perY, mt);
     Exit;
   end;
   if width < 1 then width := 1;
@@ -260,14 +326,18 @@ begin
   st := Default(TPixState);
   for j := 0 to High(t) do C(st.t[j], t[j]);
   for j := 0 to High(ft) do C(st.ft[j], ft[j]);
-  st.mx.w := @mx.w[0]; st.mx.nIn := mx.nIn; st.mx.rate := mx.rate; st.mx.shift := mx.shift;
-  st.fmx.w := @fmx.w[0]; st.fmx.nIn := fmx.nIn; st.fmx.rate := fmx.rate; st.fmx.shift := fmx.shift;
+  M(st.mx, mx); M(st.mx2, mx2); M(st.mx3, mx3); M(st.mf, mf); M(st.fmx, fmx);
   st.apm1.t := @apm1.t[0]; st.apm1.rate := apm1.rate;
   st.apm2.t := @apm2.t[0]; st.apm2.rate := apm2.rate;
   st.fapm.t := @fapm.t[0]; st.fapm.rate := fapm.rate;
   st.stretchTab := @stretchTab[0]; st.squashTab := @squashTab[0];
   st.apmBase := @apmBase[0]; st.rateTab := @rateTab[0];
-  r.run := 0; r.cntT := Ord(transp >= 0); r.cntV := 0; r.pad := 0;
+  r := Default(TCRun);
+  r.cntT := Ord(transp >= 0);
+  r.mMask := MatchMask(n);
+  SetLength(mt, r.mMask + 1);
+  r.mt := @mt[0];
+  r.perX := perX; r.perY := perY;
   if cv <> nil then pcv := @cv[0] else pcv := nil;
   if pw <> nil then ppw := @pw[0] else ppw := nil;
   i0 := 0;
@@ -297,15 +367,27 @@ begin
 end;
 {$else}
 begin
-  CodeImagePascal(cd, px, n, width, bits, cv, pw, transp);
+  mt := nil;
+  CodeImagePascal(cd, px, n, width, bits, cv, pw, transp, perX, perY, mt);
 end;
 {$endif}
 
+{ the pixel px[i] dx across and dy up, the image `width` wide and px[i] at
+  x, y; 256 outside it }
+function Far(const px: TBytes; i: SizeInt; x, y, width, dx, dy: Integer): Integer; inline;
+begin
+  if (x + dx < 0) or (x + dx >= width) or (y < dy) then Result := 256
+  else Result := px[i + dx - SizeInt(dy) * width];
+end;
+
 procedure TPixelModel.CodeImagePascal(cd: TCoder; var px: TBytes; n: SizeInt; width, bits: Integer;
-                                      const cv, pw: TWords; transp: Integer);
+                                      const cv, pw: TWords; transp, perX, perY: Integer;
+                                      var mt: TLongInts);
 const NONE = 256;
 var i: SizeInt; x, y, L, U, UL, UR, LL, UU, PV, PR, PD, PW_, v, node, sub, bit, b, j, pm, pa,
-    pr12, sel, cand, pat, run, cntT, cntV: Integer; fidx: array[0..FLAG_CONTEXTS - 1] of SizeInt;
+    pr12, sel, cand, pat, run, cntT, cntV, bp, p2, p3: Integer; fidx: array[0..FLAG_CONTEXTS - 1] of SizeInt;
+    NWW, NEE, NNWW, NNEE, NNW, NNE, WWW, NEEE, NEEEE, TX, TY, c0, c1: Integer;
+    mMask, mPtr, mLen, MP, lb: Integer; mh: SizeInt;
     base: array[0..PIXEL_CONTEXTS - 1] of QWord;
     slot: array[0..PIXEL_CONTEXTS - 1] of SizeInt;
     w: SizeInt;
@@ -315,7 +397,33 @@ begin
   x := 0; y := 0; run := 0;
   cntT := Ord(transp >= 0); cntV := 0;
   FillChar(slot, SizeOf(slot), 0);
+  mMask := MatchMask(n);
+  mt := nil; SetLength(mt, mMask + 1);
+  mPtr := 0; mLen := 0;
   for i := 0 to n - 1 do begin
+    { the match: after the pixel before, still going, or found again from
+      the last MATCH_MIN pixels (and how long it really is, up to 32) }
+    if i > 0 then begin
+      if mLen > 0 then begin
+        if px[mPtr] = px[i - 1] then begin Inc(mLen); Inc(mPtr); end else mLen := 0;
+      end;
+      if i >= MATCH_MIN then begin
+        mh := SizeInt(Hash(Hash(px[i - 1] * 256 + px[i - 2], px[i - 3] * 256 + px[i - 4]),
+                           px[i - 5] * 256 + px[i - 6]) and QWord(mMask));
+        if (mLen = 0) and (mt[mh] > 0) then begin
+          mPtr := mt[mh];
+          while (mLen < 32) and (mPtr - mLen - 1 >= 0) and (px[mPtr - mLen - 1] = px[i - mLen - 1]) do
+            Inc(mLen);
+          if mLen < MATCH_MIN then mLen := 0;
+        end;
+        mt[mh] := i;
+      end;
+    end;
+    if mLen > 0 then MP := px[mPtr] else MP := NONE;
+    if mLen = 0 then lb := 0 else if mLen < 8 then lb := 1 else if mLen < 12 then lb := 2
+    else if mLen < 16 then lb := 3 else if mLen < 24 then lb := 4 else if mLen < 32 then lb := 5
+    else lb := 6;
+
     if x > 0 then L := px[i - 1] else L := NONE;
     if x > 1 then LL := px[i - 2] else LL := NONE;
     if y > 0 then begin
@@ -352,6 +460,7 @@ begin
     fidx[3] := Hash(Hash(PV * 512 + PR, PD * 512 + L), 12 + PW_ * 16) and ft[3].mask;
     fidx[4] := Hash(Hash(L * 512 + U, UL * 512 + UR), cand + 13 * 512) and ft[4].mask;
     fidx[5] := Hash(Hash(UU * 512 + LL, cand), pat + 14 * 2048) and ft[5].mask;
+    fidx[6] := Hash(Hash(Ord(MP = cand) + 2 * Ord(MP = NONE), lb), (pat and 63) + 15 * 2048) and ft[6].mask;
     for j := 0 to High(ft) do fmx.Add(Stretch(ft[j].P12(fidx[j])));
     fmx.Add(256);
     pm := fmx.Mix(run * 4 + (pat and 3));
@@ -384,6 +493,15 @@ begin
       if (UR = transp) and (cv[i - w + 1] <> NONE) then UR := cv[i - w + 1];
       if (UU = transp) and (cv[i - 2 * w] <> NONE) then UU := cv[i - 2 * w];
     end;
+    { farther ones, as they are }
+    NWW := Far(px, i, x, y, width, -2, 1); NEE := Far(px, i, x, y, width, 2, 1);
+    NNWW := Far(px, i, x, y, width, -2, 2); NNEE := Far(px, i, x, y, width, 2, 2);
+    NNW := Far(px, i, x, y, width, -1, 2); NNE := Far(px, i, x, y, width, 1, 2);
+    WWW := Far(px, i, x, y, width, -3, 0); NEEE := Far(px, i, x, y, width, 3, 1);
+    NEEEE := Far(px, i, x, y, width, 4, 1);
+    if perX > 0 then TX := Far(px, i, x, y, width, -perX, 0) else TX := NONE;
+    if perY > 0 then TY := Far(px, i, x, y, width, 0, perY) else TY := NONE;
+    c0 := x * 16 div width; c1 := x * 64 div width;
     base[0] := QWord(bits) * 512 + QWord(cand);
     base[1] := Hash(L, 1);
     base[2] := Hash(U, 2);
@@ -393,24 +511,59 @@ begin
     base[6] := Hash(Hash(PV, L * 512 + U), 6);
     base[7] := Hash(Hash(PV * 512 + PR, PD), 7 + PW_ * 16);
     base[8] := Hash(Hash(UL * 512 + U, UR), 8);
+    base[9] := Hash(Hash(L, c0), 9);
+    base[10] := Hash(Hash(U, c0), 10);
+    base[11] := Hash(Hash(UL, c0), 11);
+    base[12] := Hash(Hash(UR, c0), 12);
+    base[13] := Hash(NWW, 13);
+    base[14] := Hash(NEE, 14);
+    base[15] := Hash(LL, 15);
+    base[16] := Hash(UU, 16);
+    base[17] := Hash(Hash(L, UR), 17);
+    base[18] := Hash(Hash(U, UU), 18);
+    base[19] := Hash(Hash(UL, NNWW), 19);
+    base[20] := Hash(Hash(UR, NNEE), 20);
+    base[21] := Hash(Hash(L, WWW), 21);
+    base[22] := Hash(Hash(LL, NEE), 22);
+    base[23] := Hash(Hash(L, NEEE), 23);
+    base[24] := Hash(Hash(L, NEEEE), 24);
+    base[25] := Hash(Hash(L * 512 + UR, NEE), 25);
+    base[26] := Hash(Hash(U * 512 + UR, UU * 512 + NNE), 26);
+    base[27] := Hash(Hash(U * 512 + UL, NNW * 512 + UU), 27);
+    base[28] := Hash(Hash(L * 512 + LL, NWW * 512 + UL), 28);
+    base[29] := Hash(c0, 29);
+    base[30] := Hash(Hash(U, c1), 30);
+    base[31] := Hash(Hash(L, c1), 31);
+    base[32] := Hash(Hash(MP, lb), 32);
+    base[33] := Hash(Hash(MP * 512 + L, lb), 33);
+    base[34] := Hash(Hash(TX, TY), 34);
+    base[35] := Hash(Hash(TX * 512 + TY, L * 512 + U), 35);
     sel := Ord(L = U) + 2 * Ord((PV <> NONE) and (PV = L)) + 4 * Ord(U = UR);
     node := 1; sub := 1;
     for b := bits - 1 downto 0 do begin
+      bp := bits - 1 - b;
       { a new slot for the top group (bits above the low four) and the low four }
       if (b = bits - 1) or (b = 3) then begin
         for j := 0 to High(t) do
           slot[j] := (Hash(base[j], node) shl 4) and t[j].mask;
         sub := 1;
       end;
-      for j := 0 to High(t) do mx.Add(Stretch(t[j].P12(slot[j] + sub)));
-      mx.Add(256);
-      pm := mx.Mix((bits - 1 - b) * 8 + sel);
+      for j := 0 to High(t) do begin
+        pa := Stretch(t[j].P12(slot[j] + sub));
+        mx.Add(pa); mx2.Add(pa); mx3.Add(pa);
+      end;
+      mx.Add(256); mx2.Add(256); mx3.Add(256);
+      pm := mx.Mix(bp * 8 + sel);
+      p2 := mx2.Mix(node and 255);
+      p3 := mx3.Mix(L * 8 + bp);
+      mf.Add(Stretch(pm)); mf.Add(Stretch(p2)); mf.Add(Stretch(p3)); mf.Add(256);
+      pm := mf.Mix(bp * 7 + lb);
       pa := apm1.Refine(pm, ((L and 255) shl 8) or (node and 255));
       pr12 := apm2.Refine(pm, ((U and 255) shl 8) or (node and 255));
-      pr12 := (2 * pm + pa + pr12) div 4;
+      pr12 := (pm + pa + 2 * pr12) div 4;
       bit := cd.Code((v shr b) and 1, pr12);
       for j := 0 to High(t) do t[j].Update(slot[j] + sub, bit);
-      mx.Update(bit);
+      mx.Update(bit); mx2.Update(bit); mx3.Update(bit); mf.Update(bit);
       apm1.Update(bit);
       apm2.Update(bit);
       node := node * 2 + bit;

@@ -355,7 +355,11 @@ begin
   One('vp8l_streams', 'VP8L stream(s)', st.webpStreams);
   One('vp8_frames', 'VP8 frame(s)', st.vp8Frames);
   One('flif_streams', 'FLIF stream(s)', st.flifStreams);
-  if Result = '' then Result := 'nothing but plain bytes';
+  if Result = '' then Result := 'nothing but plain bytes'
+  else begin
+    n.Num('plain_bytes', st.plainBytes);
+    Result := Result + ', ' + IntToStr(st.plainBytes) + ' B outside them';
+  end;
 end;
 
 procedure DescribeAction(const d: TBytes; const ext: string; verify: Boolean; threads: Integer;

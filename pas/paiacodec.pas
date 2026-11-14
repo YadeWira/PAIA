@@ -97,6 +97,7 @@ type
     webpStreams: Integer;
     vp8Frames: Integer;
     flifStreams: Integer;
+    plainBytes: SizeInt;    { the bytes outside every record, coded one by one }
   end;
 
 { The codec stream of d. }
@@ -303,7 +304,7 @@ var bm: TByteModel; pm: TPixelModel; i, j: Integer; cnt, pos, last: QWord;
     rawLen, flen: SizeInt; fm: TFliModel; fimg: TFliImage; fliStream, gifStream: Integer;
     dm: TDibModel; dtm: TTrueModel; prevDib, smallDib: TBytes; k, sw, sh: Integer;
     itm: TTokenModel; ipm: TDibModel; ist: TAnimState; wstate: TWebpState; dup: Integer; vm: TVp8Model;
-    flm: TFlifModel;
+    flm: TFlifModel; perX, perY: Integer;
   { the value when encoding; when decoding, whatever was decoded }
   function V(x: Int64): QWord;
   begin
@@ -531,8 +532,13 @@ begin
             info.blockLens[j] := Bounded(V(info.blockLens[j]), 255);
         end;
         if not cd.encoding then SetLength(px, n);
+        { the distances at which the image repeats itself, across and down
+          (a tiled background); 0: none }
+        if cd.encoding then FindPeriods(px, n, img.width, perX, perY);
+        perX := Bounded(V(perX), Math.Max(0, img.width div 2));
+        perY := Bounded(V(perY), Math.Max(0, (n div Math.Max(1, img.width)) div 2));
         canvas.Contexts(img, n, cv, pw);
-        pm.CodeImage(cd, px, n, img.width, img.mcs, cv, pw, img.transparent);
+        pm.CodeImage(cd, px, n, img.width, img.mcs, cv, pw, img.transparent, perX, perY);
         canvas.Paint(img, px, n);
       end;
   finally
@@ -657,6 +663,7 @@ begin
   if Length(d) > q then Move(d[q], raw[o], Length(d) - q);
   o := o + Length(d) - q;
   SetLength(raw, o);
+  stats.plainBytes := o;
 
   pixels := 0;
   for i := 0 to count - 1 do pixels := pixels + QWord(tk[i].n) + QWord(Length(tk[i].fdata));
