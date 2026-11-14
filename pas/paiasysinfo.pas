@@ -172,14 +172,15 @@ end;
 
 function CurrentCpuPath: TCpuPath;
 begin
-  if UsingC and UseCModel then Result := cpC else Result := cpPascal;
+  { qualified: paia8model has a UseCModel too, and the last unit in uses wins }
+  if UsingC and paiamodel.UseCModel then Result := cpC else Result := cpPascal;
 end;
 
 function SetCpuPath(p: TCpuPath): Boolean;
 begin
   if not CpuPathSupported(p) then Exit(False);
-  UseCModel := p = cpC;
-  paia8model.UseCModel := UseCModel;   { the frozen decoder of version 8 too }
+  paiamodel.UseCModel := p = cpC;
+  paia8model.UseCModel := p = cpC;   { the frozen decoder of version 8 too }
   Result := True;
 end;
 
