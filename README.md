@@ -51,6 +51,8 @@ verified.
   read: 5 (Byte Vertical Delta), 3, 7, 8, 74 ("J"), 100, 101 and 108.
 - **WebP**: lossless (VP8L) frames and the lossless alpha of lossy ones,
   still or animated; lossy (VP8) key frames.
+- **FLIF**: the whole range-coded stream, its decisions coded again with
+  FLIF's own decoder replayed; still or animated, every transform.
 
 A frame that repeats an earlier one is kept once. Files are recognized by
 their content, never by their name; anything else goes through as bytes,

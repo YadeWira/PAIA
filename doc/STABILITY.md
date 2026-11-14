@@ -25,7 +25,7 @@ BLAKE3-128 and extension. Read forever.
 | version | written by | what |
 |---|---|---|
 | 8 | 0.1.0, 0.2.0 (the command, and the zpaq-std plugin's codecs) | a file's bytes without the image data it takes, and the records: GIF images (kind 0), FLIC chunks (1), ANI bitmaps (2), IFF ANIM chunks (3), WebP VP8L streams (4), WebP VP8 frames (5), and records repeating an earlier one |
-| 9 | the next release (not published yet: may still change) | version 8's layout and models, as the work towards the next release changes them |
+| 9 | the next release (not published yet: may still change) | version 8's layout and models as the work towards the next release changes them; IFF ANIM deltas of every method, deeper FLICs, palettes, stamps and sound, and FLIF streams (kind 6) |
 
 Version 8 as 0.1.0 writes it is read forever: its layout, the records'
 fields, and the models that code them (contexts, counters, mixers,

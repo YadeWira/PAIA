@@ -45,3 +45,11 @@ different previous frames).
 and a FLC, each with a chunk that declares a size of nearly 4 GB (2 GB for
 the FLC). On 32-bit builds the parsers kept such a size in a SizeInt,
 where it wrapped negative, and read before their buffer.
+
+`flif/`: FLIFs written by FLIF 0.4's encoder (github.com/FLIF-hub/FLIF) from
+small images made from the corpus: interlaced and scanlines, grey, a
+palette, a palette with alpha, RGBA with invisible pixels (predictor -H1),
+16 bits, PermutePlanes (-W), Color_Buckets (-A), animations (one with
+-L3), and a single pixel. Each one's decisions are the same as FLIF's own
+decoder makes (doc/CODEC.md); `pas/tests/flif_replay.pas` writes them, and
+writes the stream again from them.

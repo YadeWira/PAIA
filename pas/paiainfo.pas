@@ -354,6 +354,7 @@ begin
   One('iff_chunks', 'IFF ANIM chunk(s)', st.iffChunks);
   One('vp8l_streams', 'VP8L stream(s)', st.webpStreams);
   One('vp8_frames', 'VP8 frame(s)', st.vp8Frames);
+  One('flif_streams', 'FLIF stream(s)', st.flifStreams);
   if Result = '' then Result := 'nothing but plain bytes';
 end;
 

@@ -283,6 +283,46 @@ The corpus's file of method 3 went from 149,938 bytes to 79,005 (xz:
 `tests/tools/check_anim.py`; 3,300 damaged copies of them went through
 the checked build without an internal error, all back the same.
 
+## FLIF (`pas/paiaflif.pas`)
+
+A FLIF is a header (dimensions, frames, metadata chunks) and one
+range-coded stream (a 24-bit RAC) of binary decisions, each made with a
+12-bit chance from FLIF's own model: MANIAC trees over the properties of
+each pixel's neighbourhood, after colour transforms (YCoCg, Color_Buckets,
+palettes, Frame_Shape, Frame_Lookback, and five more), interlaced by zoom
+levels or in scanlines.
+
+PAIA does not decode the pixels to model them anew. It replays FLIF's
+decoder (a port of the reference implementation's, Apache 2.0, see NOTICE)
+and codes each decision, with FLIF's chance for it as one of the model's
+inputs, next to counters on what the decision is (part of the stream,
+kind of bit, plane, zoom level, the pixel's guess, the last decisions),
+mixed and refined. On the way back the same decoder runs on the decisions
+PAIA's model gives back, and each is written again by a range encoder
+written as the exact inverse of FLIF's decoder. The stream comes back byte
+for byte whatever it holds; the decoder does not undo the transforms. The
+few bytes FLIF's encoder flushes at the end (four, in every file tried)
+are kept as they are.
+
+Exactness does not rest on the port: both directions run the same code,
+and a FLIF is taken only after its decisions, written again, gave back its
+stream. Its compression does: a chance that differed from FLIF's would be
+a worse prediction. The port was checked decision by decision against
+FLIF 0.4's own decoder (its RAC instrumented to log each chance and bit):
+the 2 FLIFs of the sample corpus (39.8 and 48.5 million decisions), 39
+files written by FLIF's encoder with every transform, interlaced and not,
+8 and 16 bits, grey, RGB and RGBA, palettes, animations with repeated
+frames, the three predictors for invisible pixels, `-K` and other chance
+parameters; and the 12 samples of `tests/flif`. All equal.
+
+| FLIF | size | PAIA | |
+|---|---|---|---|
+| abydos.flif (corpus, 16 frames 800x600 RGBA) | 1,642,162 | 1,598,283 | 97.33% |
+| 335_b3a_0.flif (corpus, 16 frames 800x600 RGBA) | 2,456,312 | 2,416,226 | 98.37% |
+| 320x240 RGBA, 16 bits (written by FLIF 0.4) | 157,737 | 137,018 | 86.86% |
+
+The model is a first one (stream 9 is not published yet).
+
 ## WebP (`pas/paiawebp.pas`): VP8L
 
 Lossless WebP frames (VP8L chunks) and the lossless alpha of lossy ones

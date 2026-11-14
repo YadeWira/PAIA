@@ -619,6 +619,7 @@ begin
   Add(st.iffChunks, 'IFF ANIM chunks');
   Add(st.webpStreams, 'VP8L streams');
   Add(st.vp8Frames, 'VP8 frames');
+  Add(st.flifStreams, 'FLIF stream');
 end;
 
 function Pct(a, b: Int64): string;
