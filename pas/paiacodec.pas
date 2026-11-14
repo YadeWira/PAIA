@@ -386,7 +386,7 @@ begin
           if not IsDelta(iff.sub) then begin
             iff.width := Bounded(V(iff.width), 65535);
             iff.height := Bounded(V(iff.height), 65535);
-            iff.planes := Bounded(V(iff.planes), 8);
+            iff.planes := Bounded(V(iff.planes), 9);   { 8 and a mask plane }
             if (iff.width < 1) or (iff.height < 1) or (iff.planes < 1) or
                (SizeInt(iff.width) * iff.height > SizeInt(1) shl 24) then
               raise Exception.Create('paiacodec: damaged stream');

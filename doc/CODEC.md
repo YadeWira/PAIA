@@ -257,7 +257,9 @@ frames are double buffered, as Amiga players draw them: a delta changes
 the frame two back (unless its ANHD says one back). The other reading,
 one back, compresses worse on every file tried, as it should.
 
-Methods 5 and the BODYs are walked in the order of their bytes. The
+A BODY's mask plane (BMHD masking 1, after the colour planes in each row)
+is walked as one more plane, as FFmpeg reads it. Methods 5 and the BODYs
+are walked in the order of their bytes. The
 others keep their operations and their data apart, or write through
 offsets, so they are walked as a player reads them, and each byte is
 coded where the walk first needs it (a token, or a bitplane byte at the

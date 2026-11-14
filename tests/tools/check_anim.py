@@ -12,7 +12,7 @@ SPEC = {   # name: (w, h, frames)
     'delta3.anim': (64, 40, 7), 'delta7_short.anim': (64, 40, 7), 'delta7_long.anim': (80, 40, 7),
     'delta8_short.anim': (64, 40, 7), 'delta8_long.anim': (80, 40, 7),
     'deltaJ_cols.anim': (320, 32, 6), 'deltaJ_rows_xor.anim': (320, 32, 6), 'deltaJ_narrow.anim': (288, 24, 5),
-    'delta100.anim': (64, 40, 7), 'delta101.anim': (64, 40, 7), 'delta108.anim': (64, 40, 7),
+    'body_mask.anim': (64, 40, 6), 'delta100.anim': (64, 40, 7), 'delta101.anim': (64, 40, 7), 'delta108.anim': (64, 40, 7),
 }
 
 def frame_pixels(w, h, k):   # as mkanim.py
@@ -35,6 +35,10 @@ for name, (w, h, n) in sorted(SPEC.items()):
     got = [r.stdout[i:i + w * h] for i in range(0, len(r.stdout), size)]
     np_ = {'delta5_xor.anim': 4, 'body_raw.anim': 2, 'deltaJ_rows_xor.anim': 2, 'deltaJ_narrow.anim': 2}.get(name, 3)
     want = [bytes(v & ((1 << np_) - 1) for row in frame_pixels(w, h, k) for v in row) for k in range(n)]
+    if name == 'body_mask.anim':
+        # FFmpeg reads the mask plane as one more bitplane: opaque pixels
+        # (all but x 8 to 11, mkanim.py's holes) come out 8 higher
+        want = [bytes(v | (0 if 8 <= i % w <= 11 else 8) for i, v in enumerate(f)) for f in want]
     m = 2 if name in XOR else n
     ok = len(got) >= n and all(got[k] == want[k] for k in range(m))
     if not ok:

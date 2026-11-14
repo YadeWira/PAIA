@@ -26,7 +26,7 @@ file. Each frame, taken out, is a valid ICO or CUR for ImageMagick.
 `anim/`: IFF ANIMs written by `tools/mkanim.py`: a ByteRun1 BODY and an
 uncompressed one, frames double buffered as Amiga players draw them with
 every delta method: 5 (Byte Vertical Delta, one in XOR mode), 3, 7 and 8
-(short and long), 74 ("J": both types, one in XOR mode, one under 320
+(short and long), a BODY with a mask plane, 74 ("J": both types, one in XOR mode, one under 320
 pixels wide), 100, 101 and 108; and a truncated file.
 `tools/check_anim.py` checks that FFmpeg decodes each to the frames
 meant.

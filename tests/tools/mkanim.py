@@ -2,7 +2,7 @@
 FORM ILBMs, the first with a BODY (ByteRun1, or not compressed), the others
 with DLTAs, double buffered as Amiga players draw them (a delta changes the
 frame two back): method 5 (Byte Vertical Delta, one in XOR mode), 3, 7 and
-8 (short and long), 74 ("J", both of its types, one in XOR mode, one under
+8 (short and long), a BODY with a mask plane, 74 ("J", both of its types, one in XOR mode, one under
 320 pixels wide), 100, 101 and 108; and a truncated file. As FFmpeg's
 iff.c reads each (tests/tools/check_anim.py checks it does).
 
@@ -45,11 +45,13 @@ def byterun1(row):
             out += bytes([i - s - 1]) + row[s:i]
     return bytes(out)
 
-def body(pl, h, np, rle):
+def body(pl, h, np, rle, mask=None):
     out = bytearray()
     for y in range(h):
         for p in range(np):
             out += byterun1(pl[p][y]) if rle else pl[p][y]
+        if mask is not None:
+            out += byterun1(mask[y]) if rle else mask[y]
     return bytes(out)
 
 def delta5(old, new, h, np, rb, xor):
@@ -74,12 +76,16 @@ def delta5(old, new, h, np, rb, xor):
         ptrs[p] = 64 + len(data); data += pd
     return struct.pack('>16I', *ptrs) + bytes(data)
 
-def anim(path, w, h, np, n, rle=True, xor=False):
+def anim(path, w, h, np, n, rle=True, xor=False, masked=False):
     rb = ((w + 15) // 16) * 2
     frames = [planes(frame_pixels(w, h, k), w, h, np) for k in range(n)]
-    bmhd = struct.pack('>HHhhBBBBHBBhh', w, h, 0, 0, np, 0, 1 if rle else 0, 0, 0, 10, 11, w, h)
+    bmhd = struct.pack('>HHhhBBBBHBBhh', w, h, 0, 0, np, 1 if masked else 0, 1 if rle else 0, 0, 0, 10, 11, w, h)
     cmap = bytes((i * 40) & 255 for i in range(3 << np))
-    out = form(b'ILBM', chunk(b'BMHD', bmhd) + chunk(b'CMAP', cmap) + chunk(b'BODY', body(frames[0], h, np, rle)))
+    mask = None
+    if masked:   # every pixel opaque but a column of holes
+        mask = [bytearray(b'\xff' * rb) for _ in range(h)]
+        for y in range(h): mask[y][1] = 0x0F
+    out = form(b'ILBM', chunk(b'BMHD', bmhd) + chunk(b'CMAP', cmap) + chunk(b'BODY', body(frames[0], h, np, rle, mask)))
     buf = [frames[0], frames[0]]
     for k in range(1, n):
         t = k & 1
@@ -342,3 +348,4 @@ anim2(os.path.join(o, 'deltaJ_narrow.anim'), 288, 24, 2, 5, 74)
 anim2(os.path.join(o, 'delta100.anim'), 64, 40, 3, 7, 100)
 anim2(os.path.join(o, 'delta101.anim'), 64, 40, 3, 7, 101)
 anim2(os.path.join(o, 'delta108.anim'), 64, 40, 3, 7, 108)
+anim(os.path.join(o, 'body_mask.anim'), 64, 40, 3, 6, masked=True)

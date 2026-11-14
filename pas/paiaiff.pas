@@ -14,8 +14,9 @@
   buffered, as players do: a delta changes the frame two back, unless its
   ANHD says one back.
 
-  Not taken (they stay as plain bytes): BODYs with a mask plane or other
-  compression, chunky (deep) ILBMs. }
+  A BODY's mask plane (BMHD masking 1) is walked as one more plane. Not
+  taken (they stay as plain bytes): BODYs of other compressions, chunky
+  (deep) ILBMs. }
 unit paiaiff;
 
 {$I paia.inc}
@@ -149,11 +150,14 @@ begin
             and (SizeInt(fs.w) * fs.h <= SizeInt(1) shl 24) then begin
       c.dataStart := q + 8; c.dataEnd := q + 8 + sz;
       c.width := fs.w; c.height := fs.h; c.planes := fs.np;
+      { a mask plane follows the colour planes in each row of a BODY: walked
+        as one more plane (deltas leave it alone) }
+      if (fs.masking = 1) and IsId(d, q, 'BODY') then c.planes := fs.np + 1;
       c.interleave := fs.interleave; c.xorMode := fs.xorMode; c.bits := fs.bits;
       c.sub := -1;
       if IsId(d, q, 'BODY') then begin
-        if (fs.masking <> 1) and (fs.comp = 1) then c.sub := IK_BODY_RLE
-        else if (fs.masking <> 1) and (fs.comp = 0) then c.sub := IK_BODY_RAW;
+        if fs.comp = 1 then c.sub := IK_BODY_RLE
+        else if fs.comp = 0 then c.sub := IK_BODY_RAW;
       end else
         case fs.op of
           5: c.sub := IK_DLTA5;
