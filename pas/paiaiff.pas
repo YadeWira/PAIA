@@ -572,7 +572,7 @@ end;
   column of words (short) or longwords (long), opcodes down the rows }
 procedure WalkVertical(var wk: TWalk; inline8, long, xorIt: Boolean);
 var k, j, b, nb, colBytes, ncol, lastOp, lastCnt, sameMode, uniqMode: Integer;
-    optr, dptr, q, dq, cnt, op, rc, n, y, r, skip, i, wide: Int64;
+    optr, dptr, q, dq, cnt, op, rc, n, y, skip, i, wide: Int64; r: Integer;
     half: Boolean; v: array[0..3] of Integer;
   function Num(at: SizeInt; kind, c: Integer; w: Integer): Int64;
   begin
@@ -647,7 +647,7 @@ begin
             if not DoUnit(dq, sameMode) then Exit;
             dq := dq + colBytes;
           end;
-          for r := 1 to Min(rc - 1, Int64(wk.st.h)) do
+          for r := 1 to Integer(Min(rc - 1, Int64(wk.st.h))) do
             if y + r < wk.st.h then
               for b := 0 to nb - 1 do
                 wk.FillIL((y + r) * Int64(wk.st.rowBytes) * wk.st.np + Int64(k) * wk.st.rowBytes + j * colBytes + b, v[b], xorIt);
@@ -656,7 +656,7 @@ begin
           y := y + op
         else begin
           n := op - skip;
-          for r := 1 to n do begin
+          for r := 1 to Integer(Min(n, Int64(MaxInt))) do begin
             if inline8 then begin
               if half and (j = ncol - 1) then begin
                 for b := 0 to 1 do if wk.PA(q + b, k, j * colBytes + b, y, uniqMode, xorIt) < 0 then Exit;
@@ -681,7 +681,7 @@ end;
 { method 74 ("J"): groups of bytes at offsets into the interleaved bitmap,
   type 1 down a column through the planes, type 2 rows of bytes }
 procedure WalkDeltaJ(var wk: TWalk);
-var q, t, flag, cols, groups, rows, bytes, g, b, dd, r, off, il, noff, pitch: Int64;
+var q, t, flag, cols, groups, rows, bytes, off, il, noff, pitch: Int64; g, b, dd, r: Integer;
     ppb, kludge: Integer; xorIt: Boolean;
   function Map(o: Int64): Int64;
   begin
@@ -702,13 +702,13 @@ begin
       if (flag < 0) or (cols < 0) or (groups < 0) then Exit;
       q := q + 6;
       xorIt := flag <> 0;
-      for g := 1 to groups do begin
+      for g := 1 to Integer(groups) do begin
         off := wk.W16(q, K_OFS, 0);
         if off < 0 then Exit;
         q := q + 2;
         if (cols * wk.st.np = 0) or (q + cols * wk.st.np > wk.len) then Exit;
         il := Map(off);
-        for b := 1 to cols do
+        for b := 1 to Integer(cols) do
           for dd := 1 to wk.st.np do begin
             wk.PIL(q, il, M_UNIQ + 2 * Ord(xorIt), xorIt);
             q := q + 1;
@@ -722,16 +722,16 @@ begin
       if (flag < 0) or (rows < 0) or (bytes < 0) or (groups < 0) then Exit;
       q := q + 8;
       xorIt := flag <> 0;
-      for g := 1 to groups do begin
+      for g := 1 to Integer(groups) do begin
         off := wk.W16(q, K_OFS, 0);
         if off < 0 then Exit;
         q := q + 2;
         il := Map(off);
-        for r := 0 to rows - 1 do
+        for r := 0 to Integer(rows) - 1 do
           for dd := 0 to wk.st.np - 1 do begin
             if (bytes = 0) or (q + bytes > wk.len) then Exit;
             noff := il + r * pitch + dd * wk.st.rowBytes;
-            for b := 0 to bytes - 1 do begin
+            for b := 0 to Integer(bytes) - 1 do begin
               wk.PIL(q, noff + b, M_UNIQ + 2 * Ord(xorIt), xorIt);
               q := q + 1;
             end;
@@ -746,7 +746,7 @@ end;
 { methods 100 and 101: per plane, entries (opcode, offset): a value run
   down the rows, or that many values, longwords (100) or words (101) }
 procedure WalkDeltaDE(var wk: TWalk; long: Boolean);
-var k, b, unitB, sameMode, uniqMode: Integer; ptr, q, entries, e, opc, off, il, pitch, ppb, r: Int64;
+var k, b, unitB, sameMode, uniqMode, r: Integer; ptr, q, entries, e, opc, off, il, pitch, ppb: Int64;
     v: array[0..3] of Integer;
 begin
   FillChar(v, SizeOf(v), 0);
@@ -776,12 +776,12 @@ begin
           if v[b] < 0 then Exit;
         end;
         q := q + unitB;
-        for r := 1 to Min(opc - 1, Int64(wk.st.h)) do begin
+        for r := 1 to Integer(Min(opc - 1, Int64(wk.st.h))) do begin
           if (il + r * pitch) div pitch >= wk.st.h then Break;
           for b := 0 to unitB - 1 do wk.FillIL(il + r * pitch + b, v[b], False);
         end;
       end else
-        for r := 0 to -opc - 1 do begin
+        for r := 0 to Integer(Min(-opc - 1, Int64(MaxInt))) do begin
           for b := 0 to unitB - 1 do
             if wk.PIL(q + b, il + r * pitch + b, uniqMode, False) < 0 then Exit;
           q := q + unitB;
@@ -793,7 +793,7 @@ end;
 { method 108: per plane, (offset, count) pairs (to 0xFFFF) and the data
   apart: a word repeated, or that many words, down (short) or across }
 procedure WalkDeltaL(var wk: TWalk; bits: Int64);
-var k, b: Integer; p0, p1, dq, oq, o, cnt, il, pitch, ppb, step, i: Int64; v: array[0..1] of Integer;
+var k, b, i: Integer; p0, p1, dq, oq, o, cnt, il, pitch, ppb, step: Int64; v: array[0..1] of Integer;
 begin
   FillChar(v, SizeOf(v), 0);
   pitch := Int64(wk.st.rowBytes) * wk.st.np;
@@ -819,10 +819,10 @@ begin
           if v[b] < 0 then Exit;
         end;
         dq := dq + 2;
-        for i := 1 to -cnt - 1 do
+        for i := 1 to Integer(-cnt - 1) do
           for b := 0 to 1 do wk.FillIL(il + i * step + b, v[b], False);
       end else
-        for i := 0 to cnt - 1 do begin
+        for i := 0 to Integer(cnt) - 1 do begin
           for b := 0 to 1 do
             if wk.PIL(dq + b, il + i * step + b, M_UNIQ, False) < 0 then Exit;
           dq := dq + 2;
