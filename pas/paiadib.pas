@@ -55,6 +55,8 @@ function FindDibs(const d: TBytes): TDibs;
   previous frame of the same shape, or nil. }
 const
   TRUE_CONTEXTS = 29;
+  { three more with a VP8L predictor's prediction (WebP) }
+  TRUE_EXTRA = 3;
   LMS_INPUTS = 12;
 
 type
@@ -63,6 +65,7 @@ type
     size of the same frame, mixed, then refined twice }
   TTrueModel = class
   private
+    nc: Integer;           { contexts: TRUE_CONTEXTS, or with TRUE_EXTRA }
     t: array of TCounters;
     mx: TMixer;
     apm1, apm2: TApm;
@@ -70,7 +73,7 @@ type
     { an adaptive linear predictor a channel, in integers (16 fraction
       bits): the same everywhere }
     lw: array[0..3, 0..LMS_INPUTS - 1] of Int64;
-    constructor Create(tableBits: Integer);
+    constructor Create(tableBits: Integer; extra: Boolean = False);
     { v when encoding; h: the contexts, hashed; sel: the mixer's weight
       set; a1, a2: the refining maps' contexts }
     function Code(cd: TCoder; v: Integer; const h: array of QWord; sel, a1, a2: Integer): Integer;
@@ -80,6 +83,28 @@ type
 procedure CodeDib(cd: TCoder; m: TDibModel; const dib: TDib; var data: TBytes;
                   len: SizeInt; const prev: TBytes; const small: TBytes; sw, sh: Integer;
                   tm: TTrueModel = nil);
+
+{ A 32-bit image w x h (blue, green, red, alpha a pixel, rows one after the
+  other) through the true-colour model, as an ANI's; prev: the one before
+  of the same size, or nil. buf has to be w * h * 4 long (decoding too). }
+type
+  { a VP8L image's predictor transform, for its predictions as context:
+    the mode of each block, and whether green was subtracted before }
+  TPredInfo = record
+    active: Boolean;
+    modes: array of LongWord;
+    bits, mw: Integer;
+    subGreen: Boolean;
+  end;
+
+procedure CodeTrueImage(cd: TCoder; m: TDibModel; tm: TTrueModel; w, h: Integer;
+                        var buf: TBytes; const prev: TBytes; const pinf: TPredInfo);
+
+{ VP8L's predictor `mode` (0 to 15) from the left, top, top-right and
+  top-left pixels (ARGB), as libwebp 1.5.0 computes it }
+function VP8LPredict(mode: Integer; L, T, TR, TL: LongWord): LongWord;
+{ green taken from red and blue (VP8L's "subtract green") }
+function SubGreen(v: LongWord): LongWord;
 
 implementation
 
@@ -242,37 +267,39 @@ end;
 
 { ---------------- the true-colour model ---------------- }
 
-constructor TTrueModel.Create(tableBits: Integer);
+constructor TTrueModel.Create(tableBits: Integer; extra: Boolean);
 var i, j: Integer;
 begin
   inherited Create;
   for i := 0 to 3 do
     for j := 0 to LMS_INPUTS - 1 do lw[i][j] := 0;
   for i := 0 to 3 do lw[i][0] := 65536;    { at first: the left neighbour }
-  SetLength(t, TRUE_CONTEXTS);
+  nc := TRUE_CONTEXTS;
+  if extra then nc := TRUE_CONTEXTS + TRUE_EXTRA;
+  SetLength(t, nc);
   for i := 0 to High(t) do t[i].Init(tableBits, 1023);
-  mx.Init(TRUE_CONTEXTS + 1, 4096, 1, 12);
+  mx.Init(nc + 1, 4096, 1, 12);
   apm1.Init(1024 * 256, 7);
   apm2.Init(1024 * 256, 7);
 end;
 
 function TTrueModel.Code(cd: TCoder; v: Integer; const h: array of QWord; sel, a1, a2: Integer): Integer;
-var b, bit, node, sub, j, pm, p1, p2: Integer; slot: array[0..TRUE_CONTEXTS - 1] of SizeInt;
+var b, bit, node, sub, j, pm, p1, p2: Integer; slot: array[0..TRUE_CONTEXTS + TRUE_EXTRA - 1] of SizeInt;
 begin
   FillChar(slot, SizeOf(slot), 0);
   node := 1; sub := 1;
   for b := 7 downto 0 do begin
     if (b = 7) or (b = 3) then begin
-      for j := 0 to TRUE_CONTEXTS - 1 do slot[j] := (Hash(h[j], node) shl 4) and t[j].mask;
+      for j := 0 to nc - 1 do slot[j] := (Hash(h[j], node) shl 4) and t[j].mask;
       sub := 1;
     end;
-    for j := 0 to TRUE_CONTEXTS - 1 do mx.Add(Stretch(t[j].P12(slot[j] + sub)));
+    for j := 0 to nc - 1 do mx.Add(Stretch(t[j].P12(slot[j] + sub)));
     mx.Add(256);
     pm := mx.Mix(((sel and 511) * 8) + (7 - b));
     p1 := apm1.Refine(pm, (a1 and 1023) * 256 + (node and 255));
     p2 := apm2.Refine(pm, (a2 and 1023) * 256 + (node and 255));
     bit := cd.Code((v shr b) and 1, (2 * pm + p1 + p2) div 4);
-    for j := 0 to TRUE_CONTEXTS - 1 do t[j].Update(slot[j] + sub, bit);
+    for j := 0 to nc - 1 do t[j].Update(slot[j] + sub, bit);
     mx.Update(bit);
     apm1.Update(bit);
     apm2.Update(bit);
@@ -300,13 +327,83 @@ end;
 { the colour bitmap of a 24- or 32-bit DIB, pixel by pixel: alpha first,
   then blue, green, red, each with its neighbours, the channels before it
   in the pixel, the frame before and a smaller size of the frame }
+function Avg2(a, b: LongWord): LongWord; inline;
+begin
+  Result := (((a xor b) and $FEFEFEFE) shr 1) + (a and b);
+end;
+
+function Clamp255(v: Integer): Integer; inline;
+begin
+  if v < 0 then Result := 0 else if v > 255 then Result := 255 else Result := v;
+end;
+
+function VP8LPredict(mode: Integer; L, T, TR, TL: LongWord): LongWord;
+var sh, pa, a, b, c: Integer; r: LongWord; ave: LongWord;
+begin
+  case mode of
+    1: Result := L;
+    2: Result := T;
+    3: Result := TR;
+    4: Result := TL;
+    5: Result := Avg2(Avg2(L, TR), T);
+    6: Result := Avg2(L, TL);
+    7: Result := Avg2(L, T);
+    8: Result := Avg2(TL, T);
+    9: Result := Avg2(T, TR);
+    10: Result := Avg2(Avg2(L, TL), Avg2(T, TR));
+    11: begin
+      { Select(T, L, TL): T unless L is nearer the gradient }
+      pa := 0;
+      for sh := 0 to 3 do begin
+        a := (T shr (8 * sh)) and 255; b := (L shr (8 * sh)) and 255; c := (TL shr (8 * sh)) and 255;
+        pa := pa + Abs(b - c) - Abs(a - c);
+      end;
+      if pa <= 0 then Result := T else Result := L;
+    end;
+    12: begin
+      r := 0;
+      for sh := 0 to 3 do
+        r := r or (LongWord(Clamp255(Integer((L shr (8 * sh)) and 255) + Integer((T shr (8 * sh)) and 255)
+                                     - Integer((TL shr (8 * sh)) and 255))) shl (8 * sh));
+      Result := r;
+    end;
+    13: begin
+      ave := Avg2(L, T); r := 0;
+      for sh := 0 to 3 do begin
+        a := (ave shr (8 * sh)) and 255; b := (TL shr (8 * sh)) and 255;
+        r := r or (LongWord(Clamp255(a + (a - b) div 2)) shl (8 * sh));
+      end;
+      Result := r;
+    end;
+  else Result := $FF000000;
+  end;
+end;
+
+function SubGreen(v: LongWord): LongWord;
+var g: LongWord;
+begin
+  g := (v shr 8) and 255;
+  Result := (v and $FF00FF00) or (((((v shr 16) and 255) + 256 - g) and 255) shl 16) or
+            (((v and 255) + 256 - g) and 255);
+end;
+
+{ a pixel of a 32-bit buffer, as ARGB }
+function Px32(const buf: TBytes; p: SizeInt): LongWord; inline;
+begin
+  Result := LongWord(buf[p]) or (LongWord(buf[p + 1]) shl 8) or (LongWord(buf[p + 2]) shl 16) or
+            (LongWord(buf[p + 3]) shl 24);
+end;
+
 procedure TrueRows(cd: TCoder; m: TDibModel; tm: TTrueModel; const dib: TDib; var buf: TBytes;
-                   len: SizeInt; const prev, small: TBytes; sw, sh: Integer);
+                   len: SizeInt; const prev, small: TBytes; sw, sh: Integer; const pinf: TPredInfo);
 const ORDER32: array[0..3] of Integer = (3, 0, 1, 2);
+      { with a VP8L prediction: green before red and blue, which it adds to }
+      ORDER_WEBP: array[0..3] of Integer = (3, 1, 2, 0);
 var rowLen, rowStart, p, si, sRow: SizeInt; x, y, oi, ch, step, w, hgt, k, bpb, v,
     W_, N_, NW, NE, WW, NN, P_, S_, grad, grad2, avg, ac, pc, pc2, curPc, curPc2,
     crossW, crossN, a, sel, sx, sy, PW, PN, PNW, PNE, mt, tpred, tpred2, lms, err, j: Integer;
-    lx: array[0..LMS_INPUTS - 1] of Integer; acc, norm: Int64; h: array[0..TRUE_CONTEXTS - 1] of QWord;
+    lx: array[0..LMS_INPUTS - 1] of Integer; acc, norm: Int64; h: array[0..TRUE_CONTEXTS + TRUE_EXTRA - 1] of QWord;
+    pL, pT, pTR, pTL, predSG, gq: LongWord; vpred, mode: Integer;
     c: array[0..9] of Integer;
   function Px(xx, yy, cc: Integer): Integer; inline;
   begin
@@ -328,6 +425,7 @@ var rowLen, rowStart, p, si, sRow: SizeInt; x, y, oi, ch, step, w, hgt, k, bpb, 
 begin
   step := dib.bpp div 8;
   w := dib.width; hgt := dib.height;
+  predSG := 0;
   rowLen := Stride(w, dib.bpp);
   bpb := w * step;
   sRow := Stride(sw, dib.bpp);
@@ -335,7 +433,33 @@ begin
     rowStart := SizeInt(y) * rowLen;
     for x := 0 to w - 1 do
       for oi := 0 to step - 1 do begin
-        if step = 4 then ch := ORDER32[oi] else ch := oi;
+        if (step = 4) and pinf.active then ch := ORDER_WEBP[oi]
+        else if step = 4 then ch := ORDER32[oi] else ch := oi;
+        if pinf.active and (oi = 0) then begin
+          { the stream's own prediction of this pixel, from its neighbours
+            (as they were before green was subtracted, if it was) }
+          p := rowStart + SizeInt(x) * 4;
+          if y = 0 then begin
+            if x = 0 then predSG := $FF000000
+            else begin pL := Px32(buf, p - 4); predSG := pL; end;
+          end else begin
+            pT := Px32(buf, p - rowLen);
+            if x = 0 then predSG := pT
+            else begin
+              pL := Px32(buf, p - 4);
+              pTL := Px32(buf, p - rowLen - 4);
+              { the upper right; past the right edge, this row's first }
+              pTR := Px32(buf, p - rowLen + 4);
+              mode := (pinf.modes[SizeInt(y shr pinf.bits) * pinf.mw + (x shr pinf.bits)] shr 8) and 15;
+              if pinf.subGreen then begin
+                pL := SubGreen(pL); pT := SubGreen(pT); pTL := SubGreen(pTL); pTR := SubGreen(pTR);
+              end;
+              predSG := VP8LPredict(mode, pL, pT, pTR, pTL);
+            end;
+            if (x = 0) and pinf.subGreen then predSG := SubGreen(predSG);
+          end;
+          if (y = 0) and (x > 0) and pinf.subGreen then predSG := SubGreen(predSG);
+        end;
         p := rowStart + SizeInt(x) * step + ch;
         if p >= len then Continue;
         W_ := Px(x - 1, y, ch); N_ := Px(x, y - 1, ch);
@@ -358,7 +482,11 @@ begin
           if a = 0 then ac := 0 else if a = 255 then ac := 1 else ac := 2;
         end;
         pc := -1; pc2 := -1;
-        if ch = 1 then pc := 0
+        if pinf.active then begin
+          if ch = 2 then pc := 1
+          else if ch = 0 then begin pc := 1; pc2 := 2; end;
+        end
+        else if ch = 1 then pc := 0
         else if ch = 2 then begin pc := 1; pc2 := 0; end;
         crossW := 256; crossN := 256; curPc := 256; curPc2 := 256;
         if pc >= 0 then begin
@@ -419,6 +547,20 @@ begin
         h[26] := Hc(lms, ac, 26);
         h[27] := Hc(lms shr 2, (grad shr 3) * 32 + (tpred2 shr 3), 27);
         h[28] := Hc(lms * 512 + P_, mt and 3, 28);
+        if pinf.active then begin
+          vpred := (predSG shr (8 * ch)) and 255;
+          if pinf.subGreen and ((ch = 0) or (ch = 2)) then begin
+            { green is known by now: the prediction plus it }
+            gq := buf[rowStart + SizeInt(x) * 4 + 1];
+            vpred := (vpred + Integer(gq)) and 255;
+          end;
+          h[29] := Hc(vpred, ac, 29);
+          h[30] := Hc(vpred * 512 + W_, 0, 30);
+          h[31] := Hc(vpred * 512 + N_, ac, 31);
+        end else begin
+          { no prediction: the model may still have the tables (WebP) }
+          h[29] := 29; h[30] := 30; h[31] := 31;
+        end;
         sel := (ch * 32 + ac * 8 + Ord(S_ <> 256) * 4 + Ord(P_ <> 256) * 2 + Ord(pc >= 0)) * 4
                + (mt and 3);
         if mt = 31 then sel := 128 * 4 + ch * 8 + ac;
@@ -444,6 +586,15 @@ begin
   end;
 end;
 
+procedure CodeTrueImage(cd: TCoder; m: TDibModel; tm: TTrueModel; w, h: Integer;
+                        var buf: TBytes; const prev: TBytes; const pinf: TPredInfo);
+var dib: TDib;
+begin
+  dib := Default(TDib);
+  dib.width := w; dib.height := h; dib.bpp := 32;
+  TrueRows(cd, m, tm, dib, buf, Length(buf), prev, nil, 0, 0, pinf);
+end;
+
 procedure CodeDib(cd: TCoder; m: TDibModel; const dib: TDib; var data: TBytes;
                   len: SizeInt; const prev: TBytes; const small: TBytes; sw, sh: Integer;
                   tm: TTrueModel);
@@ -466,7 +617,7 @@ begin
   pos := 0;
   base := 0;
   if (tm <> nil) and ((dib.bpp = 24) or (dib.bpp = 32)) then begin
-    TrueRows(cd, m, tm, dib, buf, len, prev, small, sw, sh);
+    TrueRows(cd, m, tm, dib, buf, len, prev, small, sw, sh, Default(TPredInfo));
     base := SizeInt(dib.height) * Stride(dib.width, dib.bpp);
     pos := base;
     if pos > len then pos := len;

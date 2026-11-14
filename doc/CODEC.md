@@ -422,6 +422,50 @@ on the 11 animated WebPs, 81.00% -> 78.46%. (The predictor transform's
 mode as a context too: these frames have none, so it changed nothing
 there.)
 
+### Pixels first (stream version 9)
+
+Coding a VP8L stream's symbols as they come pays for the encoder's
+choices over again: each copy's distance, each literal. So the main image
+of a stream is now coded before its symbols, as a picture, and the
+symbols after it, knowing every pixel:
+
+- **A palette image** (the colour-indexing transform alone): its indices,
+  unpacked, through GIF's pixel model (the canvas under each pixel as this
+  palette's index, the transparent index of a blended frame, the period).
+  Only green holds the index: a literal's alpha, red and blue are still
+  coded as before.
+- **True colour and alpha planes** (the predictor, the colour transform,
+  subtracting green, in any order): the transforms are undone, as libwebp
+  1.5.0 undoes them, and the colours go through the true-colour model of
+  ANI's 32-bit cursors (`CodeTrueImage`), green before red and blue, with
+  three more contexts: what the stream's own predictor says for this
+  pixel. Where a frame is transparent, libwebp sets the colours to that
+  prediction, so they cost nothing. The encoder takes this path only
+  when doing the transforms again gives the stream's image back.
+- **The symbols, knowing the pixels**: a literal's known channels and a
+  cache reference cost nothing (a palette image's cache reference: which
+  entry of that green, almost always the only one); a copy is coded as
+  near or far, its length (or "as long as the pixels allow"), then which
+  distance, as a rank among those where the pixels match that long: near,
+  in the order of VP8L's 120 codes around (the first one in 98% of
+  them); far, along a chain of earlier places with the same three pixels,
+  the latest first. The choice of a literal, a copy or a cache reference
+  sees how long a copy could be. The stream puts a copy's length before
+  its distance; extracting writes them in that order.
+
+| the benchmark's WebP set (17 files, 14.4 MB) | total | |
+|---|---|---|
+| version 9 before | 12,325,095 | 85.45% |
+| palette images, pixels first | 11,886,765 | 82.41% |
+| true colour and alpha planes too | **11,476,662** | **79.57%** |
+
+paq8px -8 does not read WebP: 94.93% on this set. Lossless frames made
+from GIFs: ff_statue 79.2% -> 66.5%, ff_example2s 79.9% -> 63.3%; the
+alpha planes of abydos.webp 88.4% -> 65.0%, ffmpeg_lossless 93.9% ->
+66.9%, test.webp (a painting, 42% transparent) 89.1% -> 83.4%. A photo
+(test_webp_js) gains little: 96.9% -> 95.4%. The lossy VP8 data is
+untouched (`paiavp8.pas`).
+
 ## WebP (`pas/paiavp8.pas`): VP8
 
 Lossy frames are VP8 key frames: a header and partitions, each a
