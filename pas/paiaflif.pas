@@ -1970,7 +1970,7 @@ end;
 { the interlaced pass from zoom level beginZL down to endZL }
 function TReplay.Pass(beginZL, endZL: Integer): Boolean;
 var coders: array of TPropCoder; p, f, i, n, z, r, predictor, np, nextp, q, hp: Integer;
-    defaultOrder: Boolean; thePredictor, zoomlevels, czl: array of Integer;
+    defaultOrder: Boolean; thePredictor, zoomlevels, czl: array of Integer; v0: Integer;
     maxBehind: array[0..4] of Integer; props: TProps; pr: TPairs;
 begin
   Result := False;
@@ -1983,7 +1983,13 @@ begin
   if (beginZL = Zooms) and (endZL > 0) then
     for p := 0 to nump - 1 do
       if ranges.Min(p) < ranges.Max(p) then begin
-        for f := 0 to High(fr) do S(f, p, 0, 0, 0, ReadUniform(ranges.Min(p), ranges.Max(p) - ranges.Min(p)));
+        for f := 0 to High(fr) do begin
+          { the top left pixel, set here rather than through the inline S:
+            FreePascal 3.2.2 for aarch64 fails on S(f, p, 0, 0, 0, v) with
+            range checks on (internal error 2014112304) }
+          v0 := ReadUniform(ranges.Min(p), ranges.Max(p) - ranges.Min(p));
+          if not fr[f].isConst[p] then fr[f].data[p][0] := Wrap(p, v0);
+        end;
         Inc(pixelsDone);
       end;
   defaultOrder := ReadUniform(0, 1) <> 0;
