@@ -357,13 +357,44 @@ files written by FLIF's encoder with every transform, interlaced and not,
 frames, the three predictors for invisible pixels, `-K` and other chance
 parameters; and the 12 samples of `tests/flif`. All equal.
 
+### The model of the decisions
+
+FLIF's chance comes from the MANIAC leaf the pixel's properties lead to,
+and it is a chance of one bit of the pixel's value, minus FLIF's guess,
+written as a zero flag, a sign, an exponent and the mantissa bits, from
+the highest. It knows nothing of the bits above in the mantissa, and the
+guess is one of three fixed predictors. PAIA's model sees, for each
+decision, besides FLIF's chance (an input of the mixers and a context):
+
+- what the decision is: part, kind of bit, its index, plane, zoom level;
+- the leaf (each plane's tree, numbered as the decoder makes them);
+- the bits of the value's magnitude decided so far, and the range the
+  value can take;
+- the properties the tree saw, quantized (sign and two bits of magnitude);
+- five other predictions of the pixel: three gradients over the
+  neighbours that are known (which ones depends on the zoom level, or
+  the scanline), the same pixel in the previous frame (in the first
+  frame: Co and Cg follow Y's departure from its own average, or the
+  median), and a blend of the first four, each weighted by 1/(1+e)^2
+  with e its errors at four neighbours (PJA's blended predictors). For
+  each, what it implies of this decision: the bit, or that it no longer
+  fits the bits decided.
+
+26 sets of counters on hashes of these, three mixers (selected by the
+kind of bit and FLIF's chance, by the decision's index, and by what the
+five predictions imply), a mixer of the three, and two APMs (on the
+decision and FLIF's chance, on the leaf).
+
 | FLIF | size | PAIA | |
 |---|---|---|---|
-| abydos.flif (corpus, 16 frames 800x600 RGBA) | 1,642,162 | 1,598,283 | 97.33% |
-| 335_b3a_0.flif (corpus, 16 frames 800x600 RGBA) | 2,456,312 | 2,416,226 | 98.37% |
-| 320x240 RGBA, 16 bits (written by FLIF 0.4) | 157,737 | 137,018 | 86.86% |
+| abydos.flif (corpus, 16 frames 800x600 RGBA) | 1,642,162 | 1,110,756 | 67.64% |
+| 335_b3a_0.flif (corpus, 16 frames 800x600 RGBA) | 2,456,312 | 1,990,996 | 81.06% |
+| 320x240 RGBA, 16 bits (written by FLIF 0.4) | 157,737 | 128,357 | 81.37% |
+| the 41 FLIFs of the bench (7,459,552 bytes) | | 6,118,624 | 82.02% |
 
-The model is a first one (stream 9 is not published yet).
+The first model (FLIF's chance and counters on what the decision is)
+gave 96.53% on the same 41 files. The price is time: about three times
+slower than that one.
 
 ## WebP (`pas/paiawebp.pas`): VP8L
 

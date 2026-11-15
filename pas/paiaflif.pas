@@ -51,6 +51,9 @@ const
   FP_TREE = 1;         { the MANIAC trees }
   FP_PIXEL = 2;        { pixel values }
 
+const
+  NFLIFCTX = 26;      { counter sets of TFlifModel }
+
 type
   EFlif = class(Exception);
 
@@ -60,6 +63,16 @@ type
   public
     kind, idx, part, plane, zoom: Integer;
     guess: Integer;              { a pixel's prediction (part FP_PIXEL) }
+    { part FP_PIXEL: the MANIAC leaf the chance comes from (-1: none), the
+      symbol's range (relative to guess), what of it is known (sym: the
+      bits of its absolute value decided so far), and the properties the
+      tree saw }
+    leaf, vlo, vhi, sym: Integer;
+    props: PInteger;
+    nprops: Integer;
+    { other predictions of the pixel than FLIF's (absolute values) }
+    cand: array[0..4] of Integer;
+    best, errMin: Integer;
     count: Int64;                { decisions so far }
     { b12: FLIF's chance of a 1, 1..4095 (12 bits); uniform: a fair bit }
     function Decide(b12: Integer): Boolean; virtual; abstract;
@@ -124,9 +137,9 @@ type
     mixed }
   TFlifModel = class
   private
-    t: array[0..5] of TCounters;
-    mx: TMixer;
-    apm: TApm;
+    t: array[0..NFLIFCTX - 1] of TCounters;
+    mx, mx2, mx3, mf: TMixer;
+    apm, apm2: TApm;
     hist: Integer;
   public
     constructor Create(tableBits: Integer);
@@ -363,6 +376,7 @@ begin
   if vmin > vmax then raise EFlif.Create('flif: damaged stream');
   if vmin = vmax then Exit(vmin);
   if (vmin > 0) or (vmax < 0) then raise EFlif.Create('flif: damaged stream');
+  bits.sym := 0;
   if ReadChance(bits, s.zero, table, FD_ZERO, 0) then Exit(0);
   if vmin < 0 then begin
     if vmax > 0 then sign := ReadChance(bits, s.sign, table, FD_SIGN, 0)
@@ -387,6 +401,7 @@ begin
     if minabs1 > amax then Continue
     else if maxabs0 >= 1 then begin
       if pos > High(s.mant) then raise EFlif.Create('flif: damaged stream');
+      bits.sym := have;
       if ReadChance(bits, s.mant[pos], table, FD_MANT, pos) then have := minabs1;
     end else
       have := minabs1;
@@ -1080,6 +1095,8 @@ var l: Integer;
 begin
   if vmin = vmax then Exit(vmin);
   l := FindLeaf(props);
+  tBits.leaf := l; tBits.vlo := vmin; tBits.vhi := vmax;
+  tBits.props := @props[0]; tBits.nprops := Length(props);
   Result := ReadSymbol(tBits, leaves[l], table, nbits, vmin, vmax);
 end;
 
@@ -1105,6 +1122,9 @@ type
     hd: TFlifHeader;
     W, H, nump: Integer;
     fr: array of TFrame;
+    { PAIA's: how far each of the first four predictions in tBits.cand
+      was from each pixel of a plane (at most 255), for the blend }
+    errs: array[0..4] of array of Byte;
     alphaZeroHeader: Boolean;
     alphaZero: Boolean;          { images[0].alpha_zero_special }
     palette: Boolean;
@@ -1150,6 +1170,8 @@ type
     procedure Scanlines;
     procedure Run;
     destructor Destroy; override;
+    procedure PreBlend(p: Integer; n0, n1, n2, n3: SizeInt);
+    procedure PostBlend(p: Integer; pos: SizeInt; v: Integer);
   end;
 
 procedure TReplay.Own(o: TObject);
@@ -1207,6 +1229,36 @@ end;
 procedure TReplay.S0(f, p, r, c, v: Integer); inline;
 begin
   if not fr[f].isConst[p] then fr[f].data[p][SizeInt(r) * W + c] := Wrap(p, v);
+end;
+
+{ tBits.cand[4]: the first four predictions, each weighted by
+  1/(1+e)^2, e its errors at the neighbours n0..n3 (positions in the plane,
+  -1 none); tBits.best: the one with the least }
+procedure TReplay.PreBlend(p: Integer; n0, n1, n2, n3: SizeInt);
+var j, e, be: Integer; wt, sw, sv: Int64; nb: array[0..3] of SizeInt; i: Integer;
+begin
+  if Length(errs[p]) = 0 then SetLength(errs[p], SizeInt(W) * H * 4);
+  nb[0] := n0; nb[1] := n1; nb[2] := n2; nb[3] := n3;
+  sw := 0; sv := 0; be := MaxInt; tBits.best := 0;
+  for j := 0 to 3 do begin
+    e := 0;
+    for i := 0 to 3 do
+      if nb[i] >= 0 then e := e + errs[p][nb[i] * 4 + j];
+    if e < be then begin be := e; tBits.best := j; end;
+    wt := (Int64(1) shl 32) div (Int64(1 + e) * (1 + e));
+    sw := sw + wt;
+    sv := sv + wt * tBits.cand[j];
+  end;
+  if sv >= 0 then tBits.cand[4] := (sv + sw div 2) div sw
+  else tBits.cand[4] := -((-sv + sw div 2) div sw);
+  tBits.errMin := Min(be, 255);
+end;
+
+procedure TReplay.PostBlend(p: Integer; pos: SizeInt; v: Integer);
+var j: Integer;
+begin
+  for j := 0 to 3 do
+    errs[p][pos * 4 + j] := Min(Abs(tBits.cand[j] - v), 255);
 end;
 
 procedure TReplay.MakeConstant(f, p, v: Integer);
@@ -1763,6 +1815,11 @@ begin
     if predictor = 0 then guess := avg
     else if predictor = 1 then guess := median
     else guess := Median3(top, bottom, left);
+    tBits.cand[0] := avg; tBits.cand[1] := tlg;
+    tBits.cand[2] := left + bottom - bottomleft;
+    if f > 0 then tBits.cand[3] := G(f - 1, p, z, r, c)
+    else if (p = 1) or (p = 2) then tBits.cand[3] := avg + props[i - 1]
+    else tBits.cand[3] := median;
     ranges.Snap(p, props, mi, ma, guess);
     props[i] := top - bottom; Inc(i);
     props[i] := top - Sar1(topleft + topright); Inc(i);
@@ -1790,6 +1847,11 @@ begin
     if predictor = 0 then guess := avg
     else if predictor = 1 then guess := median
     else guess := Median3(top, left, right);
+    tBits.cand[0] := avg; tBits.cand[1] := tlg;
+    tBits.cand[2] := right + top - topright;
+    if f > 0 then tBits.cand[3] := G(f - 1, p, z, r, c)
+    else if (p = 1) or (p = 2) then tBits.cand[3] := avg + props[i - 1]
+    else tBits.cand[3] := median;
     ranges.Snap(p, props, mi, ma, guess);
     props[i] := left - right; Inc(i);
     props[i] := left - Sar1(bottomleft + topleft); Inc(i);
@@ -1844,14 +1906,15 @@ end;
 
 { one row of plane p at zoom level z (even: horizontal lines), frame f }
 procedure TReplay.RowH(cd: TPropCoder; var props: TProps; p, z, f, r, predictor: Integer);
-var cols, beginC, endC, c, rp, mi, ma, guess, fra, v: Integer; isFRA: Boolean;
+var pos, n0, n1, n2, n3: SizeInt; rps, cps: Integer;
+  cols, beginC, endC, c, rp, mi, ma, guess, fra, v: Integer; isFRA: Boolean;
   function AlphaZeroAt(cc: Integer): Boolean;
   begin
     if (nump > 3) and not fr[f].isConst[3] then Result := G(f, 3, z, r, cc) = 0
     else Result := G(f, 0, z, r, cc) = 0;
   end;
 begin
-  cols := ColsZ(z);
+  cols := ColsZ(z); rps := RowPS(z); cps := ColPS(z);
   beginC := 0; endC := cols;
   isFRA := nump = 5;
   if fr[f].seenBefore >= 0 then begin
@@ -1889,7 +1952,16 @@ begin
     if isFRA and (p = 4) and (ma > f) then ma := f;
     if isFRA and ((guess > ma) or (guess < mi)) then guess := mi;
     tBits.guess := guess;
+    pos := SizeInt(r) * rps * W + SizeInt(c) * cps;
+    if c > 0 then n0 := pos - cps else n0 := -1;
+    if r >= 3 then begin
+      n2 := pos - 2 * rps * W;
+      if c > 0 then n1 := n2 - cps else n1 := -1;
+      if c + 1 < cols then n3 := n2 + cps else n3 := -1;
+    end else begin n1 := -1; n2 := -1; n3 := -1; end;
+    PreBlend(p, n0, n1, n2, n3);
     v := cd.ReadInt(props, mi - guess, ma - guess) + guess;
+    PostBlend(p, pos, v);
     S(f, p, z, r, c, v);
   end;
   if (f > 0) and alphaZero and (p < 3) then
@@ -1900,14 +1972,15 @@ end;
 
 { one row at an odd zoom level (vertical lines: the odd columns) }
 procedure TReplay.RowV(cd: TPropCoder; var props: TProps; p, z, f, r, predictor: Integer);
-var cols, beginC, endC, c, rp, mi, ma, guess, fra, v: Integer; isFRA: Boolean;
+var pos, n0, n1, n2, n3: SizeInt; rps, cps: Integer;
+  cols, beginC, endC, c, rp, mi, ma, guess, fra, v: Integer; isFRA: Boolean;
   function AlphaZeroAt(cc: Integer): Boolean;
   begin
     if (nump > 3) and not fr[f].isConst[3] then Result := G(f, 3, z, r, cc) = 0
     else Result := G(f, 0, z, r, cc) = 0;
   end;
 begin
-  cols := ColsZ(z);
+  cols := ColsZ(z); rps := RowPS(z); cps := ColPS(z);
   beginC := 1; endC := cols;
   isFRA := nump = 5;
   if fr[f].seenBefore >= 0 then begin
@@ -1951,7 +2024,16 @@ begin
         if isFRA and (p = 4) and (ma > f) then ma := f;
         if isFRA and ((guess > ma) or (guess < mi)) then guess := mi;
         tBits.guess := guess;
+        pos := SizeInt(r) * rps * W + SizeInt(c) * cps;
+        if c >= 3 then n0 := pos - 2 * cps else n0 := -1;
+        if r >= 1 then begin
+          n2 := pos - rps * W;
+          if c >= 3 then n1 := n2 - 2 * cps else n1 := -1;
+          if c + 2 < cols then n3 := n2 + 2 * cps else n3 := -1;
+        end else begin n1 := -1; n2 := -1; n3 := -1; end;
+        PreBlend(p, n0, n1, n2, n3);
         v := cd.ReadInt(props, mi - guess, ma - guess) + guess;
+        PostBlend(p, pos, v);
         S(f, p, z, r, c, v);
       end;
     end;
@@ -2088,6 +2170,8 @@ begin
   else topleft := left;
   grad := left + top - topleft;
   guess := Median3(grad, left, top);
+  tBits.cand[0] := grad; tBits.cand[1] := left; tBits.cand[2] := top;
+  if f > 0 then tBits.cand[3] := G0(f - 1, p, r, c) else tBits.cand[3] := Sar1(left + top);
   ranges.Snap(p, props, mi, ma, guess);
   which := 0;
   if guess = grad then which := 0
@@ -2110,7 +2194,8 @@ begin
 end;
 
 procedure TReplay.RowSL(cd: TPropCoder; var props: TProps; p, f, r, grey, minP: Integer);
-var beginC, endC, c, mi, ma, guess, fra, v: Integer; isFRA: Boolean;
+var pos, n0, n1, n2, n3: SizeInt;
+  beginC, endC, c, mi, ma, guess, fra, v: Integer; isFRA: Boolean;
   function AlphaAt(cc: Integer): Integer;
   begin
     if nump > 3 then Result := G0(f, 3, r, cc) else Result := 1;
@@ -2148,7 +2233,16 @@ begin
     guess := PredictPropsSL(f, p, r, c, props, mi, ma, minP);
     if isFRA and (p = 4) and (ma > f) then ma := f;
     tBits.guess := guess;
+    pos := SizeInt(r) * W + c;
+    if c > 0 then n0 := pos - 1 else n0 := -1;
+    if r > 0 then begin
+      n2 := pos - W;
+      if c > 0 then n1 := n2 - 1 else n1 := -1;
+      if c + 1 < W then n3 := n2 + 1 else n3 := -1;
+    end else begin n1 := -1; n2 := -1; n3 := -1; end;
+    PreBlend(p, n0, n1, n2, n3);
     v := cd.ReadInt(props, mi - guess, ma - guess) + guess;
+    PostBlend(p, pos, v);
     S0(f, p, r, c, v);
   end;
   if f > 0 then begin
@@ -2341,10 +2435,13 @@ end;
 
 { ---------------- PAIA's side ---------------- }
 
-function FHash(a, b: QWord): QWord; inline;
+{ (signed arguments: -1 is "none"; their bits as they are) }
+function FHash(a, b: Int64): QWord; inline;
 begin
-  Result := ((a + 1) * QWord($9E3779B1)) and $FFFFFFFF;
-  Result := ((Result xor b) * QWord($85EBCA6B)) and $FFFFFFFF;
+  {$push}{$q-}{$r-}
+  Result := ((QWord(a) + 1) * QWord($9E3779B1)) and $FFFFFFFF;
+  Result := ((Result xor QWord(b)) * QWord($85EBCA6B)) and $FFFFFFFF;
+  {$pop}
   Result := Result xor (Result shr 15);
 end;
 
@@ -2352,39 +2449,125 @@ constructor TFlifModel.Create(tableBits: Integer);
 var i: Integer;
 begin
   inherited Create;
-  for i := 0 to High(t) do t[i].Init(tableBits, 255);
-  mx.Init(Length(t) + 2, 3 * 5 * 16, 1, 11);
+  for i := 0 to High(t) do t[i].Init(tableBits, 127);
+  mx.Init(Length(t) + 2, 3 * 5 * 16, 1, 12);
+  mx2.Init(Length(t) + 2, 3 * 5 * 36, 1, 12);
+  mx3.Init(Length(t) + 2, 3 * 5 * 1024, 1, 12);
+  mf.Init(4, 3 * 5, 1, 12);
   apm.Init(3 * 5 * 36 * 4, 7);
+  apm2.Init(4096 * 4, 7);
   hist := 0;
 end;
 
+{ a property, quantized: its sign and about two bits of its magnitude }
+function QProp(x: Integer): Integer; inline;
+var a, e: Integer;
+begin
+  a := Abs(x);
+  if a < 4 then e := a
+  else begin
+    e := 0;
+    while (a shr e) >= 4 do Inc(e);
+    e := 2 * e + ((a shr e) and 1) + 2;
+  end;
+  if x < 0 then Result := 64 - e else Result := 64 + e;
+end;
+
+{ what a prediction d of the symbol (relative to the guess) says of the
+  decision: 0 or 1 the bit it implies, 2 or 3 it no longer fits }
+function Implied(d, kind, idx, sym: Integer): Integer;
+var ad, e: Integer;
+begin
+  ad := Abs(d);
+  case kind of
+    FD_ZERO: Result := Ord(d = 0);
+    FD_SIGN: if d = 0 then Result := 2 else Result := Ord(d > 0);
+    FD_EXP: begin
+        if (d = 0) or (Ord(d > 0) <> (idx and 1)) then Exit(2);
+        e := 0;
+        while (ad shr (e + 1)) <> 0 do Inc(e);
+        if e < idx shr 1 then Result := 3 else Result := Ord(e = idx shr 1);
+      end;
+    FD_MANT: begin
+        if (ad shr (idx + 1)) = (sym shr (idx + 1)) then Result := (ad shr idx) and 1
+        else Result := 2 + Ord(ad > sym);
+      end;
+  else Result := 0;
+  end;
+end;
+
 function TFlifModel.Code(cd: TCoder; bit, b12: Integer; src: TFlifBits): Integer;
-var k, q, pl, z, g, j, pm, pa, p: Integer; h: array[0..5] of QWord; idx: array[0..5] of SizeInt;
+var im: array[0..4] of Integer; imAll, d, p3: Integer;
+  k, q, pl, z, g, j, pm, p1, p2, pa, pb, p, n, lf, sy, rg: Integer;
+  h: array[0..NFLIFCTX - 1] of QWord; idx: array[0..NFLIFCTX - 1] of SizeInt;
+  pr: PInteger;
 begin
   k := (src.part * 5 + src.kind) * 36 + src.idx;
   q := b12 shr 5;
-  pl := src.plane; z := src.zoom;
-  if src.part = FP_PIXEL then g := (src.guess + 4096) shr 3 else g := 0;
+  pl := src.plane; z := Min(src.zoom, 63);
+  if (src.part = FP_PIXEL) and (src.props <> nil) then begin
+    g := (src.guess + 4096) shr 3;
+    lf := src.leaf; sy := src.sym; pr := src.props; n := src.nprops;
+    rg := QProp(src.vlo) * 128 + QProp(src.vhi);
+    imAll := 0;
+    for j := 0 to 4 do begin
+      d := src.cand[j] - src.guess;
+      if d < src.vlo then d := src.vlo else if d > src.vhi then d := src.vhi;
+      im[j] := Implied(d, src.kind, src.idx, sy) * 128 + QProp(d);
+      imAll := imAll * 4 + im[j] shr 7;
+    end;
+  end else begin
+    g := 0; lf := -1; sy := 0; pr := nil; n := 0; rg := 0;
+    imAll := 0; for j := 0 to 4 do im[j] := 0;
+  end;
   h[0] := FHash(k, pl);
   h[1] := FHash(k * 128 + q, pl + 8);
-  h[2] := FHash(k * 64 + Min(z, 63), pl + 16);
+  h[2] := FHash(k * 64 + z, pl + 16);
   h[3] := FHash(k * 256 + (hist and 255), pl + 24);
   h[4] := FHash(FHash(k * 128 + q, hist and 15), pl + 32);
-  h[5] := FHash(FHash(k, g), pl * 64 + Min(z, 63) + 40);
-  mx.Add(Stretch(b12));
+  h[5] := FHash(FHash(k, g), pl * 64 + z + 40);
+  h[6] := FHash(FHash(k, lf), pl + 48);
+  h[7] := FHash(FHash(FHash(k, lf), sy), pl + 56);
+  h[8] := FHash(FHash(FHash(k, sy), g), pl + 64);
+  h[9] := FHash(FHash(k, sy), rg * 8 + pl + 72);
+  if n >= 4 then begin
+    h[10] := FHash(FHash(FHash(k, sy), QProp(pr[n - 1]) * 128 + QProp(pr[n - 2])), pl + 80);
+    h[11] := FHash(FHash(FHash(k, sy), QProp(pr[n - 3]) * 128 + QProp(pr[n - 4])), pl + 88);
+    h[12] := FHash(FHash(FHash(k, sy), QProp(pr[0]) * 128 + QProp(pr[1])), pl + 96);
+    h[13] := FHash(FHash(FHash(k, sy), QProp(pr[2]) * 128 + QProp(pr[3])), FHash(lf, pl + 104));
+  end else begin
+    h[10] := FHash(k, pl + 80); h[11] := FHash(k, pl + 88);
+    h[12] := FHash(k, pl + 96); h[13] := FHash(k, pl + 104);
+  end;
+  for j := 0 to 4 do h[14 + j] := FHash(FHash(k, im[j]), pl * 8 + j + 112);
+  h[19] := FHash(FHash(k, imAll), FHash(sy, pl + 120));
+  if pr <> nil then h[20] := FHash(FHash(k, im[src.best] * 4 + src.best), FHash(Min(src.errMin, 63), pl + 128))
+  else h[20] := FHash(k, pl + 128);
+  h[21] := FHash(FHash(FHash(k, lf), im[4]), FHash(sy, pl + 136));
+  h[22] := FHash(FHash(FHash(k, lf), imAll), pl + 144);
+  h[24] := FHash(FHash(FHash(k, lf), im[0]), FHash(sy, pl + 160));
+  h[25] := FHash(FHash(FHash(k, lf), im[1]), FHash(sy, pl + 168));
+  h[23] := FHash(FHash(FHash(k, lf), im[src.best and 7] * 4 + src.best), FHash(sy, pl + 152));
+  mx.Add(Stretch(b12)); mx2.Add(Stretch(b12)); mx3.Add(Stretch(b12));
   for j := 0 to High(t) do begin
     idx[j] := h[j] and t[j].mask;
-    mx.Add(Stretch(t[j].P12(idx[j])));
+    p := Stretch(t[j].P12(idx[j]));
+    mx.Add(p); mx2.Add(p); mx3.Add(p);
   end;
-  mx.Add(256);
-  pm := mx.Mix((src.part * 5 + src.kind) * 16 + (b12 shr 8));
+  mx.Add(256); mx2.Add(256); mx3.Add(256);
+  p1 := mx.Mix((src.part * 5 + src.kind) * 16 + (b12 shr 8));
+  p2 := mx2.Mix(k);
+  p3 := mx3.Mix((src.part * 5 + src.kind) * 1024 + imAll);
+  mf.Add(Stretch(p1)); mf.Add(Stretch(p2)); mf.Add(Stretch(p3)); mf.Add(256);
+  pm := mf.Mix(src.part * 5 + src.kind);
   pa := apm.Refine(pm, k * 4 + (b12 shr 10));
-  p := (pm + 3 * pa) div 4;
+  pb := apm2.Refine(pm, (FHash(FHash(k, lf), pl) and 4095) * 4 + (b12 shr 10));
+  p := (2 * pm + 3 * pa + 3 * pb) div 8;
   if p < 1 then p := 1 else if p > 4095 then p := 4095;
   Result := cd.Code(bit, p);
   for j := 0 to High(t) do t[j].Update(idx[j], Result);
-  mx.Update(Result);
-  apm.Update(Result);
+  mx.Update(Result); mx2.Update(Result); mx3.Update(Result); mf.Update(Result);
+  apm.Update(Result); apm2.Update(Result);
   hist := (hist shl 1) or Result;
 end;
 
@@ -2471,9 +2654,11 @@ begin
   if not ParseFlifHeader(d, s.hdr) then Exit;
   bits := TFlifCheckBits.Create;
   try
-    bits.rin := TFlifRacIn.Create(d, s.hdr.racStart, Length(d));
     bits.rout := TFlifRacOut.Create;
     try
+      { (the coder reads its first bytes as it is made: a stream shorter
+        than that is no FLIF's either) }
+      bits.rin := TFlifRacIn.Create(d, s.hdr.racStart, Length(d));
       ReplayFlif(s.hdr, bits);
     except
       on EFlif do Exit;
