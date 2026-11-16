@@ -481,14 +481,24 @@ symbols after it, knowing every pixel:
   in the order of VP8L's 120 codes around (the first one in 98% of
   them); far, along a chain of earlier places with the same three pixels,
   the latest first. The choice of a literal, a copy or a cache reference
-  sees how long a copy could be. The stream puts a copy's length before
-  its distance; extracting writes them in that order.
+  sees how long a copy could be, and what a literal and the cache's entry
+  would cost in the codes. The stream puts a copy's length before its
+  distance; extracting writes them in that order.
+- **The prefix codes, knowing the pixels**: the pixels are coded before
+  the codes too. Each code length is coded with what the group's pixels
+  say of that symbol (absent, or about -log2 of its share; for the colour
+  cache's entries, how many pixels the cache could give, from a cache run
+  over the pixels alone: it holds the last pixel of each slot, whatever
+  token gave it), the run of absent symbols ahead (for the repeat codes),
+  and the length the symbol had in the last code of its kind. The code
+  length code's lengths see the last ones of their kind.
 
 | the benchmark's WebP set (17 files, 14.4 MB) | total | |
 |---|---|---|
 | version 9 before | 12,325,095 | 85.45% |
 | palette images, pixels first | 11,886,765 | 82.41% |
-| true colour and alpha planes too | **11,476,662** | **79.57%** |
+| true colour and alpha planes too | 11,476,662 | 79.57% |
+| the codes and the token's type knowing the pixels | **11,434,383** | **79.27%** |
 
 paq8px -8 does not read WebP: 94.93% on this set. Lossless frames made
 from GIFs: ff_statue 79.2% -> 66.5%, ff_example2s 79.9% -> 63.3%; the

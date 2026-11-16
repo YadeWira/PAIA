@@ -63,9 +63,29 @@ type
     function Code(cd: TCoder; v, nbits, kind, c1, c2: Integer): Integer;
   end;
 
+  { the symbols of the code length codes: counters on given contexts }
+  TCLModel = class
+  private
+    t: array[0..7] of TCounters;
+    mx: TMixer;
+  public
+    constructor Create(tableBits: Integer);
+    { v of nbits (at most 8) bits; h: 8 contexts; msel: the mixer's set (< 32) }
+    function Code(cd: TCoder; v, nbits: Integer; const h: array of QWord; msel: Integer): Integer;
+  end;
+
   { what one file's streams share }
   TWebpState = class
     bm: TBitsModel;
+    clm: TCLModel;
+    tym: TCLModel;       { the token's type, pixels first }
+    { the lengths of the last prefix code of each of the five kinds (255:
+      none yet) }
+    prevCL: array[0..4] of array of Byte;
+    { and their code length codes' lengths, plus one (0: none yet; 9: not
+      written) }
+    prevCLCL: array[0..4] of array[0..18] of Byte;
+    prevNcl: array[0..4] of Integer;
     pm: TDibModel;
     gm: TPixelModel;     { palette indices, as GIF's pixels (made when needed) }
     tm: TTrueModel;      { true colours, as an ANI's (made when needed) }
@@ -187,17 +207,46 @@ begin
   Result := node - (1 shl nbits);
 end;
 
+constructor TCLModel.Create(tableBits: Integer);
+var i: Integer;
+begin
+  inherited Create;
+  for i := 0 to High(t) do t[i].Init(tableBits, 255);
+  mx.Init(Length(t) + 1, 32 * 8, 1, 11);
+end;
+
+function TCLModel.Code(cd: TCoder; v, nbits: Integer; const h: array of QWord; msel: Integer): Integer;
+var b, bit, node, j, p: Integer; idx: array[0..7] of SizeInt;
+begin
+  node := 1;
+  for b := nbits - 1 downto 0 do begin
+    for j := 0 to 7 do begin
+      idx[j] := Hash(h[j], node) and t[j].mask;
+      mx.Add(Stretch(t[j].P12(idx[j])));
+    end;
+    mx.Add(256);
+    p := mx.Mix(msel * 8 + (nbits - 1 - b));
+    bit := cd.Code((v shr b) and 1, p);
+    for j := 0 to 7 do t[j].Update(idx[j], bit);
+    mx.Update(bit);
+    node := node * 2 + bit;
+  end;
+  Result := node - (1 shl nbits);
+end;
+
 constructor TWebpState.Create(tableBits: Integer);
 begin
   inherited Create;
   bm := TBitsModel.Create(tableBits - 2);
+  clm := TCLModel.Create(Math.Min(tableBits - 2, 20));
+  tym := TCLModel.Create(Math.Min(tableBits - 2, 22));
   pm := TDibModel.Create(tableBits);
   tBits := tableBits;
 end;
 
 destructor TWebpState.Destroy;
 begin
-  bm.Free; pm.Free; gm.Free; tm.Free;
+  bm.Free; clm.Free; tym.Free; pm.Free; gm.Free; tm.Free;
   inherited;
 end;
 
@@ -331,6 +380,15 @@ type
     kindIdx: Integer;    { the stream's kind (WK_VP8L, WK_ALPH): which image before }
     { the encoder: the main image as the stream holds it (from a check walk) }
     known: TImage;
+    { pixels first: how often each value of each channel (green, red,
+      blue, alpha) is in the pixels of the group whose codes are read }
+    chHist: array[0..3] of array[0..255] of Integer;
+    cacheHist: array of Integer;    { the colour cache's slots: pixels it could give }
+    hitSlot: array of SmallInt;     { each pixel's slot if the cache holds it, or -1 }
+    chOk: array[0..3] of Boolean;
+    chTot: SizeInt;
+    function FieldC(n, kind, c1, c2: Integer): Integer;
+    function SymCL(var h: THuff; const hc: array of QWord; msel: Integer): Integer;
     function TrueColours(w, h: Integer; out kv: TImage): Boolean;
     function PaletteIndices(w, h: Integer; out kg: TBytes): Boolean;
     function PalLookup(c: LongWord): Integer;
@@ -472,6 +530,22 @@ begin
   end;
 end;
 
+function TWalk.FieldC(n, kind, c1, c2: Integer): Integer;
+begin
+  if fail then Exit(0);
+  case mode of
+    MODE_CHECK: begin Result := io.Read(n); if io.bad then fail := True; end;
+    MODE_ENC: begin
+      Result := io.Read(n); if io.bad then begin fail := True; Exit; end;
+      if n > 0 then st.bm.Code(cd, Result, n, kind, c1, c2);
+    end;
+  else begin
+    if n > 0 then Result := st.bm.Code(cd, 0, n, kind, c1, c2) else Result := 0;
+    io.Write(Result, n);
+  end;
+  end;
+end;
+
 function TWalk.ReadSym(var h: THuff): Integer;
 var l, c, b: Integer;
 begin
@@ -522,6 +596,26 @@ begin
   end;
 end;
 
+{ a code length code's symbol (0..18, 5 bits) }
+function TWalk.SymCL(var h: THuff; const hc: array of QWord; msel: Integer): Integer;
+begin
+  if fail then Exit(0);
+  case mode of
+    MODE_CHECK: Result := ReadSym(h);
+    MODE_ENC: begin
+      Result := ReadSym(h);
+      if (h.single < 0) and not fail then st.clm.Code(cd, Result, 5, hc, msel);
+    end;
+  else begin
+    if h.single >= 0 then Result := h.single
+    else begin
+      Result := st.clm.Code(cd, 0, 5, hc, msel);
+      Emit(h, Result);
+    end;
+  end;
+  end;
+end;
+
 function TWalk.Chan(var h: THuff; const c: array of Integer): Integer;
 begin
   if fail then Exit(0);
@@ -543,7 +637,13 @@ end;
 
 function TWalk.ReadCode(var h: THuff; alphabet, kind: Integer): Boolean;
 var simple, nsym, first8, s0, s1, ncl, i, maxSym, si, cl, prevLen, rep, lnb: Integer;
-    clh: THuff;
+    clh: THuff; hk: Boolean; est, zr: array of Integer; hc: array[0..7] of QWord;
+    cnt, e, pc, pn, zb, last2, msel: Integer; tot: SizeInt;
+  function PrevAt(k: Integer): Integer; inline;
+  begin
+    if (mode <> MODE_CHECK) and (k < Length(st.prevCL[kind])) and (st.prevCL[kind][k] <> 255) then Result := st.prevCL[kind][k]
+    else Result := 16;
+  end;
 begin
   Result := False;
   h.n := alphabet;
@@ -561,30 +661,83 @@ begin
       h.len[s1] := 1;
     end;
   end else begin
-    ncl := Field(4, K_CLCL, 100) + 4;
+    if mode <> MODE_CHECK then pc := st.prevNcl[kind] else pc := 0;
+    ncl := FieldC(4, K_CLCL, 100, pc);
+    if mode <> MODE_CHECK then st.prevNcl[kind] := ncl + 1;
+    ncl := ncl + 4;
     clh.n := 19;
     clh.len := nil; SetLength(clh.len, 19);
-    for i := 0 to ncl - 1 do clh.len[CODE_LENGTH_ORDER[i]] := Field(3, K_CLCL, i);
+    for i := 0 to ncl - 1 do begin
+      if mode <> MODE_CHECK then pc := st.prevCLCL[kind][i] else pc := 0;
+      clh.len[CODE_LENGTH_ORDER[i]] := FieldC(3, K_CLCL, i, pc * 8 + Ord(i > 0) * clh.len[CODE_LENGTH_ORDER[Math.Max(i - 1, 0)]]);
+      if mode <> MODE_CHECK then st.prevCLCL[kind][i] := clh.len[CODE_LENGTH_ORDER[i]] + 1;
+    end;
+    if mode <> MODE_CHECK then
+      for i := ncl to 18 do st.prevCLCL[kind][i] := 9;
     if fail or not clh.Build then begin fail := True; Exit; end;
     if Field(1, K_MAXSYM, 0) = 1 then begin
       lnb := 2 + 2 * Field(3, K_MAXSYM, 1);
       maxSym := 2 + Field(lnb, K_MAXSYM, 2);
       if maxSym > alphabet then begin fail := True; Exit; end;
     end else maxSym := alphabet;
-    si := 0; prevLen := 8;
+    { what the pixels say of each symbol's length (pixels first): est 0 the
+      value is not in the group's pixels, 1..15 about -log2 of its share,
+      16 unknown; zr the run of absent values from here }
+    hk := (mode <> MODE_CHECK) and (kind < 4) and chOk[kind];
+    est := nil; zr := nil;
+    SetLength(est, alphabet + 1); SetLength(zr, alphabet + 1);
+    tot := Math.Max(chTot, 1);
+    for i := 0 to alphabet - 1 do begin
+      if hk and (i < 256) then begin
+        cnt := chHist[kind][i];
+        if cnt = 0 then est[i] := 0
+        else begin
+          e := 1;
+          while (e < 15) and (SizeInt(cnt) shl e <= tot) do Inc(e);
+          est[i] := e;
+        end;
+      end else if hk and (kind = 0) and (i >= 280) and (i - 280 < Length(cacheHist)) then begin
+        cnt := cacheHist[i - 280];
+        if cnt = 0 then est[i] := 0
+        else begin
+          e := 1;
+          while (e < 15) and (SizeInt(cnt) shl e <= tot) do Inc(e);
+          est[i] := e;
+        end;
+      end else est[i] := 16;
+    end;
+    est[alphabet] := 16; zr[alphabet] := 0;
+    for i := alphabet - 1 downto 0 do
+      if est[i] = 0 then zr[i] := zr[i + 1] + 1 else zr[i] := 0;
+    si := 0; prevLen := 8; last2 := 0;
     while (si < alphabet) and not fail do begin
       if maxSym = 0 then Break;
       Dec(maxSym);
-      cl := Sym(clh, K_CLSYM, prevLen, kind);
+      e := est[si]; pc := PrevAt(si); pn := PrevAt(si + 1);
+      zb := zr[si];
+      if zb > 10 then zb := 4 + Ord(zb > 138) + Ord(zb > 30) else if zb > 2 then zb := 3;
+      hc[0] := Hash(kind * 32 + prevLen, 1);
+      hc[1] := Hash(Hash(kind * 32 + e, zb), 2);
+      hc[2] := Hash(Hash(kind * 32 + e, prevLen), 3);
+      hc[3] := Hash(Hash(kind * 32 + pc, e), 4);
+      hc[4] := Hash(Hash(kind * 32 + pc, prevLen), 5);
+      hc[5] := Hash(Hash(kind * 32 + last2, prevLen), 6);
+      hc[6] := Hash(Hash(kind * 32 + zb, pc * 32 + pn), 7);
+      hc[7] := Hash(Hash(kind * 32 + e, Math.Min(si, 256) shr 3), pc + 8 * 32);
+      if e = 16 then msel := 0 else if e = 0 then msel := 1 else msel := 2;
+      if pc = 16 then msel := msel + 3;
+      cl := SymCL(clh, hc, kind * 6 + msel);
+      last2 := (last2 * 32 + cl) and 1023;
       if fail then Exit;
       if cl < 16 then begin
         h.len[si] := cl; Inc(si);
         if cl <> 0 then prevLen := cl;
       end else begin
+        zb := Math.Min(zr[si], 255);
         case cl of
-          16: rep := 3 + Field(2, K_REPEAT, 0);
-          17: rep := 3 + Field(3, K_REPEAT, 1);
-        else rep := 11 + Field(7, K_REPEAT, 2);
+          16: rep := 3 + FieldC(2, K_REPEAT, 0, prevLen * 256 + Ord(pc = prevLen) * 16 + e);
+          17: rep := 3 + FieldC(3, K_REPEAT, 1, zb);
+        else rep := 11 + FieldC(7, K_REPEAT, 2, zb);
         end;
         if si + rep > alphabet then begin fail := True; Exit; end;
         for i := 1 to rep do begin
@@ -595,6 +748,13 @@ begin
     end;
   end;
   if fail or not h.Build then begin fail := True; Exit; end;
+  if mode = MODE_CHECK then Exit(True);
+  if Length(st.prevCL[kind]) < alphabet then begin
+    i := Length(st.prevCL[kind]);
+    SetLength(st.prevCL[kind], alphabet);
+    FillChar(st.prevCL[kind][i], alphabet - i, 255);
+  end;
+  for i := 0 to alphabet - 1 do st.prevCL[kind][i] := h.len[i];
   Result := True;
 end;
 
@@ -787,6 +947,32 @@ var cacheBits, metaBits, mw, ngroups, g, i, k, x, y, s, t, lastType, lp, dp, len
     pf, full: Boolean; kg: TBytes; kv: TImage; gv: LongWord; gCount: array[0..255] of Integer; gk, r, cnt, maxLen, lx, dx, eq: Integer;
     code, far, lastFar, found, steps, tctx2: Integer; q, tq, inserted: SizeInt;
     head: array of SizeInt; prv: array of SizeInt;
+    tileOrd, tileStart, tileFill: array of SizeInt; tx, ty, xx, yy: Integer;
+    tch: array[0..7] of QWord; litC, cacheC, typeHist, sinceCopy: Integer;
+  { a symbol's length in a code (0: the code cannot write it; a one-symbol
+    code writes its symbol with none, counted as 1) }
+  function CodeCost(var hc: THuff; sy: Integer): Integer;
+  begin
+    if hc.single >= 0 then begin
+      if sy = hc.single then Result := 1 else Result := 0;
+    end else if (sy < 0) or (sy >= hc.n) then Result := 0
+    else Result := hc.len[sy];
+  end;
+  function LitSum(a, b: Integer): Integer; inline;
+  begin
+    if b = 0 then Result := 0 else Result := a + b - 1;
+  end;
+  procedure AddHist(q: SizeInt); inline;
+  var v: LongWord;
+  begin
+    if (hitSlot <> nil) and (hitSlot[q] >= 0) then begin
+      Inc(cacheHist[hitSlot[q]]); Inc(chTot); Exit;
+    end;
+    v := kv[q];
+    Inc(chHist[0][(v shr 8) and 255]); Inc(chHist[1][(v shr 16) and 255]);
+    Inc(chHist[2][v and 255]); Inc(chHist[3][v shr 24]);
+    Inc(chTot);
+  end;
   { the known greens from pos on match those dist back, for n pixels }
   function MatchAt(d: SizeInt; n: Integer): Boolean;
   var jj: Integer;
@@ -862,7 +1048,7 @@ var cacheBits, metaBits, mw, ngroups, g, i, k, x, y, s, t, lastType, lp, dp, len
   end;
 begin
   Result := False;
-  px := nil;
+  px := nil; hitSlot := nil;
   if (w < 1) or (h < 1) or (SizeInt(w) * h > MAX_PIXELS) then begin fail := True; Exit; end;
   total := SizeInt(w) * h;
   cacheBits := 0;
@@ -881,10 +1067,69 @@ begin
     end;
   end;
   if fail then Exit;
+  { pixels first: a palette image's indices, before its symbols }
+  pf := False; full := False; kg := nil; kv := nil;
+  if level0 and (mode <> MODE_CHECK) and (palette <> nil) and (trSeen = 8) then begin
+    pf := PaletteIndices(w, h, kg);
+    if pf then begin
+      SetLength(kv, total);
+      for j := 0 to total - 1 do kv[j] := LongWord(kg[j]) shl 8;
+      kg := nil;
+    end;
+  end else if level0 and (mode <> MODE_CHECK) and (palette = nil) and ((trSeen and 8) = 0) then begin
+    pf := TrueColours(w, h, kv);
+    full := pf;
+  end;
+  if fail then Exit;
+  { the colour cache holds the last pixel of each slot, whatever token gave
+    it: which pixels it could give, from the pixels alone }
+  hitSlot := nil; cacheHist := nil;
+  if full and (cacheBits > 0) then begin
+    SetLength(hitSlot, total);
+    SetLength(cache, 1 shl cacheBits);
+    SetLength(cacheHist, 1 shl cacheBits);
+    for q := 0 to High(cache) do cache[q] := 0;
+    for q := 0 to total - 1 do begin
+      k := ((QWord($1e35a7bd) * kv[q]) and $FFFFFFFF) shr (32 - cacheBits);
+      if cache[k] = kv[q] then hitSlot[q] := k else hitSlot[q] := -1;
+      cache[k] := kv[q];
+    end;
+    cache := nil;
+  end;
+  { the tiles of each group, for the histograms }
+  tileOrd := nil; tileStart := nil;
+  for i := 0 to 3 do chOk[i] := False;
+  if pf and (metaBits > 0) then begin
+    SetLength(tileStart, ngroups + 1);
+    SetLength(tileOrd, Length(meta));
+    for j := 0 to High(meta) do Inc(tileStart[meta[j] + 1]);
+    for g := 1 to ngroups do tileStart[g] := tileStart[g] + tileStart[g - 1];
+    SetLength(tileFill, ngroups);
+    for g := 0 to ngroups - 1 do tileFill[g] := tileStart[g];
+    for j := 0 to High(meta) do begin
+      tileOrd[tileFill[meta[j]]] := j; Inc(tileFill[meta[j]]);
+    end;
+    tileFill := nil;
+  end;
   SetLength(codes, ngroups);
   alphabet := 256 + 24;
   if cacheBits > 0 then alphabet := alphabet + (1 shl cacheBits);
   for g := 0 to ngroups - 1 do begin
+    if pf then begin
+      FillChar(chHist, SizeOf(chHist), 0);
+      for q := 0 to High(cacheHist) do cacheHist[q] := 0;
+      chOk[0] := True; chOk[1] := full; chOk[2] := full; chOk[3] := full;
+      chTot := 0;
+      if metaBits = 0 then
+        for q := 0 to total - 1 do AddHist(q)
+      else
+        for j := tileStart[g] to tileStart[g + 1] - 1 do begin
+          tx := (tileOrd[j] mod mw) shl metaBits; ty := (tileOrd[j] div mw) shl metaBits;
+          for yy := ty to Math.Min(h, ty + (1 shl metaBits)) - 1 do
+            for xx := tx to Math.Min(w, tx + (1 shl metaBits)) - 1 do
+              AddHist(SizeInt(yy) * w + xx);
+        end;
+    end;
     if not ReadCode(codes[g][0], alphabet, 0) then Exit;
     if not ReadCode(codes[g][1], 256, 1) then Exit;
     if not ReadCode(codes[g][2], 256, 2) then Exit;
@@ -907,20 +1152,6 @@ begin
         transpPacked := transpPacked and 255;
         Break;
       end;
-  { pixels first: a palette image's indices, before its symbols }
-  pf := False; full := False; kg := nil; kv := nil;
-  if level0 and (mode <> MODE_CHECK) and (palette <> nil) and (trSeen = 8) then begin
-    pf := PaletteIndices(w, h, kg);
-    if pf then begin
-      SetLength(kv, total);
-      for j := 0 to total - 1 do kv[j] := LongWord(kg[j]) shl 8;
-      kg := nil;
-    end;
-  end else if level0 and (mode <> MODE_CHECK) and (palette = nil) and ((trSeen and 8) = 0) then begin
-    pf := TrueColours(w, h, kv);
-    full := pf;
-  end;
-  if fail then Exit;
   FillChar(gCount, SizeOf(gCount), 0);
   if cacheBits > 0 then gCount[0] := 1 shl cacheBits;
   head := nil; prv := nil; inserted := 0; lastFar := 0; tctx2 := 0;
@@ -929,6 +1160,8 @@ begin
     for j := 0 to 65535 do head[j] := -1;
     SetLength(prv, total);
   end;
+  typeHist := 0; sinceCopy := 0; litC := 0; cacheC := 0; lx := 0;
+  for j := 0 to 7 do tch[j] := 0;
   pos := 0; x := 0; y := 0; lastType := 0; lastLp := 0; lastDp := 0; argb := 0;
   while (pos < total) and not fail do begin
     if metaBits > 0 then g := meta[SizeInt(y shr metaBits) * mw + (x shr metaBits)] else g := 0;
@@ -980,11 +1213,30 @@ begin
         end;
       end;
       tctx2 := lx * 2 + far;
+      { what each token would cost in the codes: a literal (0: none can
+        say it), the cache's entry }
+      litC := CodeCost(codes[g][0], gk);
+      if full then begin
+        if litC > 0 then litC := LitSum(litC, CodeCost(codes[g][1], (gv shr 16) and 255));
+        if litC > 0 then litC := LitSum(litC, CodeCost(codes[g][2], gv and 255));
+        if litC > 0 then litC := LitSum(litC, CodeCost(codes[g][3], gv shr 24));
+      end;
+      cacheC := 0;
+      if (cacheBits > 0) and (tctx and 8 <> 0) and full then
+        cacheC := CodeCost(codes[g][0], 280 + Integer(((QWord($1e35a7bd) * gv) and $FFFFFFFF) shr (32 - cacheBits)));
+      tch[0] := Hash(tctx, 11);
+      tch[1] := Hash(Hash(tctx, tctx2), 12);
+      tch[2] := Hash(Hash(Math.Min(litC, 63), cacheC), tctx2 + 13 * 256);
+      tch[3] := Hash(Hash(typeHist and 63, tctx and 15), 14);
+      tch[4] := Hash(Hash(maxLen, Math.Min(litC, 63)), 15);
+      tch[5] := Hash(Hash(Math.Min(litC, 63) - cacheC, tctx), 16);
+      tch[6] := Hash(Hash(Math.Min(sinceCopy, 32), lx), (tctx and 15) + 17 * 256);
+      tch[7] := Hash(Hash(g, tctx), tctx2 + 18 * 256);
     end;
     if codes[g][0].single < 0 then begin
       if pf then begin
-        if mode = MODE_ENC then st.bm.Code(cd, t, 2, K_TYPE + 128, tctx, tctx2)
-        else t := st.bm.Code(cd, 0, 2, K_TYPE + 128, tctx, tctx2);
+        if mode = MODE_ENC then st.tym.Code(cd, t, 2, tch, Math.Min(lx, 7) * 3 + lastType)
+        else t := st.tym.Code(cd, 0, 2, tch, Math.Min(lx, 7) * 3 + lastType);
       end
       else if mode = MODE_ENC then st.bm.Code(cd, t, 2, K_TYPE + 64 * Ord(level0), lastType, tctx)
       else if mode = MODE_DEC then t := st.bm.Code(cd, 0, 2, K_TYPE + 64 * Ord(level0), lastType, tctx);
@@ -993,6 +1245,8 @@ begin
       if s < 256 then t := 0 else if s < 280 then t := 1 else t := 2;
     end;
     lastType := t;
+    typeHist := (typeHist * 4 + t) and $FFFF;
+    if t = 1 then sinceCopy := 0 else Inc(sinceCopy);
     { the neighbourhood }
     for k := 1 to 8 do c[k] := NONE;
     case t of
